@@ -89,7 +89,7 @@ window.LOGO_SRC = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAg
 const { useState, useEffect, useMemo } = React;
 
 // ============ Configuración ============
-const APP_VERSION = "2026-10-05.2";
+const APP_VERSION = "2026-10-05.3";
 const KEY = "intranet:data";
 const OLD_KEY = "helpdesk:data";
 const SHARED = true;
@@ -98,7 +98,7 @@ const MONTHS = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", 
 const STATUSES = ["Nuevo", "Asignado", "En proceso", "Cerrado"];
 const PRIORITIES = ["Baja", "Media", "Alta"];
 const POST_TYPES = ["Frase del mes", "Efeméride", "Aviso", "Concientización"];
-const ROLE_LABEL = { admin: "Administrador", it: "Soporte IT", rh: "Recursos Humanos", colaborador: "Colaborador" };
+const ROLE_LABEL = { admin: "Administrador", it: "Soporte IT", inventarios: "Inventarios", rh: "Recursos Humanos", colaborador: "Colaborador" };
 const SESSION_KEY = "intranet:session";
 // Módulos del panel que se pueden asignar usuario por usuario
 const MODULES = [
@@ -115,7 +115,7 @@ const MODULES = [
 ];
 const ALL_MODULES = MODULES.map((m) => m.id);
 // Lo que ve cada perfil si el administrador no le asigna módulos a la medida
-const ROLE_MODULES = { admin: ALL_MODULES, it: ["tickets", "proyectos", "inventario"], rh: ["employees", "awards", "posts", "bulletin", "departments"], colaborador: [] };
+const ROLE_MODULES = { admin: ALL_MODULES, it: ["tickets", "proyectos", "inventario"], inventarios: ["inventario"], rh: ["employees", "awards", "posts", "bulletin", "departments"], colaborador: [] };
 const modulesOf = (u) => (!u ? [] : u.role === "admin" ? ALL_MODULES : Array.isArray(u.modules) ? u.modules.filter((m) => ALL_MODULES.includes(m)) : ROLE_MODULES[u.role] || []);
 const firstTab = (u) => modulesOf(u)[0] || "users";
 const LOGO_SRC = (typeof window !== "undefined" && window.LOGO_SRC) || "";
@@ -752,7 +752,7 @@ function ControlIT({ me, tab, ficha, soloDocs }) {
   const srcdoc = useMemo(() => {
     const b64 = typeof window !== "undefined" && window.IT_APP_B64;
     if (!b64) return null;
-    const embed = JSON.stringify({ u: me.id, nombre: me.name, tab, rol: me.role === "admin" ? "admin" : me.role === "it" ? "sistemas" : "modumex", ficha: ficha || null, docs: !!(ficha && soloDocs), base: window.location.origin + window.location.pathname });
+    const embed = JSON.stringify({ u: me.id, nombre: me.name, tab, rol: me.role === "admin" ? "admin" : (me.role === "it" || me.role === "inventarios") ? "sistemas" : "modumex", ficha: ficha || null, docs: !!(ficha && soloDocs), base: window.location.origin + window.location.pathname });
     const bridge = `<script>
 window.EMBED = ${embed};
 document.documentElement.classList.add("embed");
@@ -829,7 +829,7 @@ function Users({ data, me, onChange }) {
                 <Field label="Perfil"><select value={nu.role} onChange={(e) => setNu({ ...nu, role: e.target.value })}>{Object.entries(ROLE_LABEL).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select></Field>
                 <Field label="Contraseña (mínimo 4 caracteres)"><input type="text" value={nu.pass} spellCheck={false} onChange={(e) => setNu({ ...nu, pass: e.target.value })} /></Field>
               </div>
-              <div style={{ fontSize: 12, color: "#6B7684" }}>Colaborador: ve la portada y levanta tickets. Soporte IT: además atiende tickets, proyectos e inventario. RH: publica el boletín. Administrador: todo.</div>
+              <div style={{ fontSize: 12, color: "#6B7684" }}>Colaborador: ve la portada y levanta tickets. Inventarios: solo el inventario, con permiso para dar de alta y editar. Soporte IT: tickets, proyectos e inventario. RH: publica el boletín. Administrador: todo.</div>
               {nu.id && !idOk && <div style={{ fontSize: 13, color: "#B3261E" }}>El usuario debe tener al menos 3 caracteres (letras, números, punto o guion) y no estar en uso.</div>}
               <div style={{ display: "flex", gap: 8 }}><button className="btn btn-primary" onClick={create} disabled={!idOk || !nu.name.trim() || nu.pass.length < 4}>Crear usuario</button><button className="btn btn-ghost" onClick={() => setNu(null)}>Cancelar</button></div>
             </div>
@@ -868,7 +868,7 @@ function Users({ data, me, onChange }) {
                     </label>
                   ))}
                 </div>
-                <div style={{ fontSize: 12, color: "#6B7684", marginTop: 8 }}>Todos ven la portada y pueden levantar tickets. En Proyectos e Inventario, un usuario que no es Soporte IT entra en modo consulta.</div>
+                <div style={{ fontSize: 12, color: "#6B7684", marginTop: 8 }}>Todos ven la portada y pueden levantar tickets. En Proyectos e Inventario, un usuario que no es Soporte IT ni Inventarios entra en modo consulta.</div>
               </div>
             )}
             <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
