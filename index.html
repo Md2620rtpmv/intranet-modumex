@@ -89,7 +89,7 @@ window.LOGO_SRC = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAg
 const { useState, useEffect, useMemo } = React;
 
 // ============ Configuración ============
-const APP_VERSION = "2026-10-05.3";
+const APP_VERSION = "2026-10-13.1";
 const KEY = "intranet:data";
 const OLD_KEY = "helpdesk:data";
 const SHARED = true;
@@ -111,6 +111,7 @@ const MODULES = [
   { id: "awards", label: "Empleados del mes", group: "Comunicación interna" },
   { id: "posts", label: "Avisos y frase del mes", group: "Comunicación interna" },
   { id: "bulletin", label: "Boletín PDF", group: "Comunicación interna" },
+  { id: "policies", label: "Políticas", group: "Comunicación interna" },
   { id: "departments", label: "Departamentos", group: "Configuración" },
 ];
 const ALL_MODULES = MODULES.map((m) => m.id);
@@ -188,10 +189,11 @@ const DEFAULT_DATA = {
     { id: "auxrh", role: "rh", name: "AUXRH", pass: "auxrh2026" },
     { id: "colaborador", role: "colaborador", name: "Colaborador", pass: "modumex2026" },
   ],
-  departments: ["Administración", "Almacén", "Calidad", "Comercial", "Contabilidad", "Especificación", "Herrajes", "Innovación", "IT", "Leeder", "Mantenimiento", "Superior E"],
+  departments: ["Administración", "Almacén", "Calidad", "CIP", "Comercial", "Compras", "Contabilidad", "Dirección", "Especificación", "Herrajes", "Innovación", "IT", "Leeder", "Mantenimiento", "Operaciones", "Producción", "RH", "SAC", "Sistemas", "Superior E"],
   classifications: ["SAP", "SOPORTE", "MB", "HARDWARE", "SOFTWARE"],
   tickets: [],
   nextFolio: 1,
+  policies: [],
   employees: SEED_EMPLOYEES,
   awards: [
     { id: uid(), month: "2026-08", employeeId: byName("Inocencio Compean") },
@@ -337,6 +339,141 @@ function Presentation({ month, pages, onClose }) {
   );
 }
 
+// ============ Políticas por departamento ============
+const POLICY_KEY = (id) => `intranet:politica:${id}`;
+const POLICY_LIMIT = 8 * 1024 * 1024;
+const policiesFor = (data, me) => (data.policies || []).filter((p) => p.departments.includes("Todos") || (me.department && p.departments.includes(me.department))).sort((a, b) => a.title.localeCompare(b.title));
+
+function PdfViewer({ title, src, loading, onClose, canDownload, fileName }) {
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(20,30,45,.7)", zIndex: 80, display: "flex", flexDirection: "column", padding: 14 }} onClick={onClose}>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }} onClick={(e) => e.stopPropagation()}>
+        <div style={{ color: "#fff", fontWeight: 600, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{title}</div>
+        {canDownload && src && <a className="btn btn-sm" href={src} download={fileName || "politica.pdf"} style={{ background: "#fff", color: "#1F3F73", textDecoration: "none" }}>Descargar</a>}
+        <button className="btn btn-sm" onClick={onClose} style={{ background: "#fff" }}>Cerrar</button>
+      </div>
+      {loading ? <div style={{ color: "#C9D6E5", margin: "auto" }}>Cargando documento…</div>
+        : <iframe title={title} src={src + "#toolbar=0&navpanes=0"} style={{ flex: 1, border: 0, borderRadius: 8, background: "#fff" }} onClick={(e) => e.stopPropagation()} />}
+    </div>
+  );
+}
+
+function usePolicyViewer() {
+  const [view, setView] = useState(null);
+  const open = async (p) => {
+    setView({ p, loading: true, src: null });
+    try { const r = await window.storage.get(POLICY_KEY(p.id), SHARED); setView({ p, loading: false, src: r.value }); }
+    catch { setView({ p, loading: false, src: null, error: true }); }
+  };
+  return { view, open, close: () => setView(null) };
+}
+
+function PoliciesSection({ data, me }) {
+  const list = policiesFor(data, me);
+  const { view, open, close } = usePolicyViewer();
+  return (
+    <section className="card" style={{ padding: 22, marginBottom: 20 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8 }}>
+        <h2 className="section-title" style={{ marginBottom: 4 }}>Políticas que te corresponden</h2>
+        <span style={{ fontSize: 13, color: "#6B7684" }}>{me.department ? `Departamento: ${me.department}` : "Sin departamento asignado"}</span>
+      </div>
+      {!me.department && <div style={{ fontSize: 14, color: "#6B7684", padding: "8px 0" }}>Tu usuario no tiene departamento registrado. Pide al área de IT que lo asigne para ver tus políticas.</div>}
+      {me.department && list.length === 0 && <div style={{ fontSize: 14, color: "#6B7684", padding: "8px 0" }}>Aún no hay políticas publicadas para tu departamento.</div>}
+      {list.map((p) => (
+        <div key={p.id} style={{ display: "flex", gap: 12, alignItems: "center", padding: "10px 0", borderTop: "1px solid #EEF1F5" }}>
+          <div style={{ width: 36, height: 44, borderRadius: 4, background: "#E3ECF7", color: "#1F3F73", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, flexShrink: 0 }}>PDF</div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontWeight: 600 }}>{p.title}</div>
+            <div style={{ fontSize: 12, color: "#6B7684" }}>{p.departments.includes("Todos") ? "Aplica a toda la empresa" : p.departments.join(" · ")}{p.updatedAt ? ` · actualizada ${fmtDay(p.updatedAt.slice(0, 10))}` : ""}</div>
+          </div>
+          <button className="btn btn-primary btn-sm" onClick={() => open(p)}>Ver</button>
+        </div>
+      ))}
+      {view && (view.error
+        ? <PdfViewer title={view.p.title} loading={false} src="about:blank" onClose={close} />
+        : <PdfViewer title={view.p.title} loading={view.loading} src={view.src} onClose={close} canDownload={me.role === "admin"} fileName={view.p.fileName} />)}
+    </section>
+  );
+}
+
+function Policies({ data, me, onChange, onError }) {
+  const [form, setForm] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const { view, open, close } = usePolicyViewer();
+  const depts = ["Todos", ...data.departments];
+  const toggle = (d) => {
+    let sel = form.departments.includes(d) ? form.departments.filter((x) => x !== d) : [...form.departments, d];
+    if (d === "Todos" && sel.includes("Todos")) sel = ["Todos"]; else sel = sel.filter((x) => x !== "Todos" || d === "Todos");
+    setForm({ ...form, departments: sel });
+  };
+  const onFile = async (e) => {
+    const f = e.target.files?.[0]; if (!f) return;
+    if (f.type !== "application/pdf") return onError("El archivo debe ser PDF.");
+    if (f.size > POLICY_LIMIT) return onError(`El PDF pesa ${(f.size / 1048576).toFixed(1)} MB; el máximo es 8 MB.`);
+    setForm({ ...form, file: f, fileName: f.name, size: f.size, title: form.title || f.name.replace(/\.pdf$/i, "") });
+  };
+  const save = async () => {
+    if (!form.title.trim() || !form.departments.length || (!form.id && !form.file)) return;
+    setBusy(true);
+    try {
+      const id = form.id || uid();
+      if (form.file) await window.storage.set(POLICY_KEY(id), await readDataUrl(form.file), SHARED);
+      const rec = { id, title: form.title.trim(), departments: form.departments, fileName: form.fileName, size: form.size, updatedAt: new Date().toISOString(), by: me.name };
+      onChange(form.id ? data.policies.map((p) => (p.id === id ? { ...p, ...rec } : p)) : [...data.policies, rec]);
+      setForm(null);
+    } catch { onError("No se pudo guardar la política. Si el archivo es grande, intenta con uno más ligero."); }
+    setBusy(false);
+  };
+  const remove = async (p) => {
+    if (!confirm(`¿Eliminar la política "${p.title}"?`)) return;
+    try { await window.storage.delete(POLICY_KEY(p.id), SHARED); } catch { /* ya no existía */ }
+    onChange(data.policies.filter((x) => x.id !== p.id));
+  };
+  const list = [...(data.policies || [])].sort((a, b) => a.title.localeCompare(b.title));
+  return (
+    <div style={{ maxWidth: 760 }}>
+      <p style={{ fontSize: 13, color: "#6B7684", margin: "0 0 14px" }}>Cada colaborador ve en la portada las políticas de su departamento (el departamento se asigna en Usuarios). Una política puede aplicar a varios departamentos o a toda la empresa.</p>
+      {!form && <button className="btn btn-primary" onClick={() => setForm({ title: "", departments: [], file: null })} style={{ marginBottom: 16 }}>Cargar política en PDF</button>}
+      {form && (
+        <div className="card" style={{ padding: 20, marginBottom: 16, display: "grid", gap: 12, borderColor: "#1F3F73" }}>
+          <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>{form.id ? "Editar política" : "Nueva política"}</h3>
+          <Field label={form.id ? "Reemplazar PDF (opcional)" : "Archivo PDF"}><input type="file" accept="application/pdf" onChange={onFile} disabled={busy} /></Field>
+          {form.fileName && <div style={{ fontSize: 12, color: "#6B7684" }}>{form.fileName} · {(form.size / 1024).toFixed(0)} KB</div>}
+          <Field label="Título"><input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="Ej. Política de uso de equipo de cómputo" /></Field>
+          <div>
+            <label>Departamentos a los que aplica</label>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(170px, 1fr))", gap: "6px 14px" }}>
+              {depts.map((d) => (
+                <label key={d} style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13, margin: 0, cursor: "pointer", fontWeight: d === "Todos" ? 600 : 400, color: "#1B2430" }}>
+                  <input type="checkbox" checked={form.departments.includes(d)} onChange={() => toggle(d)} style={{ width: "auto" }} />{d === "Todos" ? "Toda la empresa" : d}
+                </label>
+              ))}
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button className="btn btn-primary" onClick={save} disabled={busy || !form.title.trim() || !form.departments.length || (!form.id && !form.file)}>{busy ? "Guardando…" : "Publicar"}</button>
+            <button className="btn btn-ghost" onClick={() => setForm(null)} disabled={busy}>Cancelar</button>
+          </div>
+        </div>
+      )}
+      <div className="card">
+        {list.length === 0 ? <div style={{ padding: 30, textAlign: "center", color: "#6B7684", fontSize: 14 }}>Aún no hay políticas cargadas.</div> : list.map((p) => (
+          <div key={p.id} style={{ display: "flex", gap: 12, padding: "12px 18px", borderBottom: "1px solid #EEF1F5", alignItems: "center" }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontWeight: 600 }}>{p.title}</div>
+              <div style={{ fontSize: 12, color: "#6B7684" }}>{p.departments.includes("Todos") ? "Toda la empresa" : p.departments.join(" · ")} · {p.fileName} · {p.by}{p.updatedAt ? ` · ${fmtDay(p.updatedAt.slice(0, 10))}` : ""}</div>
+            </div>
+            <button className="btn btn-ghost btn-sm" onClick={() => open(p)}>Ver</button>
+            <button className="btn btn-ghost btn-sm" onClick={() => setForm({ id: p.id, title: p.title, departments: p.departments, fileName: p.fileName, size: p.size, file: null })}>Editar</button>
+            <button className="btn btn-danger btn-sm" onClick={() => remove(p)}>Eliminar</button>
+          </div>
+        ))}
+      </div>
+      {view && <PdfViewer title={view.p.title} loading={view.loading} src={view.src || "about:blank"} onClose={close} canDownload fileName={view.p.fileName} />}
+    </div>
+  );
+}
+
 // ============ Portada pública ============
 function Home({ data, pages, month, setMonth, onTicket, me, onPanel, onLogout }) {
   const [openPost, setOpenPost] = useState(null);
@@ -397,6 +534,8 @@ function Home({ data, pages, month, setMonth, onTicket, me, onPanel, onLogout })
             {quote.body && <div style={{ fontSize: 13, color: "#6B7684", marginTop: 8 }}>— {quote.body}</div>}
           </div>
         )}
+
+        <PoliciesSection data={data} me={me} />
 
         <div className="home-grid" style={{ display: "grid", gridTemplateColumns: "1.1fr .9fr", gap: 20 }}>
           <div style={{ display: "grid", gap: 20, alignContent: "start" }}>
@@ -807,24 +946,25 @@ function Users({ data, me, onChange }) {
   const editable = isAdmin ? data.users : data.users.filter((u) => u.id === me.id);
   const save = (u) => {
     const e = edit[u.id] || {}; const name = (e.name ?? u.name).trim(); if (!name) return;
-    onChange(data.users.map((x) => (x.id === u.id ? { ...x, name, pass: e.pass || x.pass, role: isAdmin && e.role ? e.role : x.role, modules: isAdmin && e.modules !== undefined ? e.modules : x.modules } : x)));
+    onChange(data.users.map((x) => (x.id === u.id ? { ...x, name, pass: e.pass || x.pass, role: isAdmin && e.role ? e.role : x.role, modules: isAdmin && e.modules !== undefined ? e.modules : x.modules, department: isAdmin && e.department !== undefined ? e.department : x.department } : x)));
     setEdit({ ...edit, [u.id]: undefined });
   };
   const toggleModule = (u, id) => { const e = edit[u.id] || {}; const cur = e.modules !== undefined ? e.modules : modulesOf({ ...u, role: e.role || u.role }); const next = cur.includes(id) ? cur.filter((m) => m !== id) : [...cur, id]; setEdit({ ...edit, [u.id]: { ...e, modules: next } }); };
   const remove = (u) => { if (confirm(`¿Eliminar el acceso de ${u.name}? Sus tickets asignados quedarán sin asignar.`)) onChange(data.users.filter((x) => x.id !== u.id)); };
   const idOk = nu && /^[a-z0-9._-]{3,}$/.test(nu.id) && !data.users.some((x) => x.id === nu.id);
-  const create = () => { if (!idOk || !nu.name.trim() || nu.pass.length < 4) return; onChange([...data.users, { id: nu.id, name: nu.name.trim(), role: nu.role, pass: nu.pass }]); setNu(null); };
+  const create = () => { if (!idOk || !nu.name.trim() || nu.pass.length < 4) return; onChange([...data.users, { id: nu.id, name: nu.name.trim(), role: nu.role, pass: nu.pass, department: nu.department || "" }]); setNu(null); };
   return (
     <div style={{ display: "grid", gap: 14, maxWidth: 680 }}>
       {isAdmin && (
         <div>
-          {!nu ? <button className="btn btn-primary" onClick={() => setNu({ id: "", name: "", role: "colaborador", pass: "" })}>Nuevo usuario</button> : (
+          {!nu ? <button className="btn btn-primary" onClick={() => setNu({ id: "", name: "", role: "colaborador", pass: "", department: "" })}>Nuevo usuario</button> : (
             <div className="card" style={{ padding: 20, display: "grid", gap: 12, borderColor: "#1F3F73" }}>
               <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>Nuevo usuario</h3>
               <div className="grid2">
                 <Field label="Usuario (para iniciar sesión)"><input value={nu.id} spellCheck={false} placeholder="ej. jperez" onChange={(e) => setNu({ ...nu, id: e.target.value.toLowerCase().replace(/\s+/g, "") })} /></Field>
                 <Field label="Nombre para mostrar"><input value={nu.name} onChange={(e) => setNu({ ...nu, name: e.target.value })} /></Field>
               </div>
+              <Field label="Departamento (define qué políticas le corresponden)"><select value={nu.department} onChange={(e) => setNu({ ...nu, department: e.target.value })}><option value="">— Sin departamento —</option>{data.departments.map((d) => <option key={d}>{d}</option>)}</select></Field>
               <div className="grid2">
                 <Field label="Perfil"><select value={nu.role} onChange={(e) => setNu({ ...nu, role: e.target.value })}>{Object.entries(ROLE_LABEL).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select></Field>
                 <Field label="Contraseña (mínimo 4 caracteres)"><input type="text" value={nu.pass} spellCheck={false} onChange={(e) => setNu({ ...nu, pass: e.target.value })} /></Field>
@@ -837,7 +977,7 @@ function Users({ data, me, onChange }) {
         </div>
       )}
       {editable.map((u) => {
-        const e = edit[u.id] || {}; const dirty = (e.name !== undefined && e.name !== u.name) || e.pass || (e.role && e.role !== u.role) || e.modules !== undefined;
+        const e = edit[u.id] || {}; const dirty = (e.name !== undefined && e.name !== u.name) || e.pass || (e.role && e.role !== u.role) || e.modules !== undefined || (e.department !== undefined && e.department !== (u.department || ""));
         const roleNow = e.role || u.role; const modsNow = e.modules !== undefined ? e.modules : modulesOf({ ...u, role: roleNow }); const custom = e.modules !== undefined ? true : Array.isArray(u.modules);
         return (
           <div key={u.id} className="card" style={{ padding: 20 }}>
@@ -849,6 +989,11 @@ function Users({ data, me, onChange }) {
               <Field label="Nombre para mostrar"><input value={e.name ?? u.name} onChange={(ev) => setEdit({ ...edit, [u.id]: { ...e, name: ev.target.value } })} /></Field>
               <Field label="Nueva contraseña"><input type="password" value={e.pass || ""} placeholder="Dejar vacío para no cambiar" onChange={(ev) => setEdit({ ...edit, [u.id]: { ...e, pass: ev.target.value } })} /></Field>
             </div>
+            {isAdmin && (
+              <div className="grid2" style={{ marginTop: 12 }}>
+                <Field label="Departamento"><select value={e.department !== undefined ? e.department : (u.department || "")} onChange={(ev) => setEdit({ ...edit, [u.id]: { ...e, department: ev.target.value } })}><option value="">— Sin departamento —</option>{data.departments.map((d) => <option key={d}>{d}</option>)}</select></Field>
+              </div>
+            )}
             {isAdmin && u.id !== me.id && u.role !== "admin" && (
               <div className="grid2" style={{ marginTop: 12 }}>
                 <Field label="Perfil"><select value={e.role || u.role} onChange={(ev) => setEdit({ ...edit, [u.id]: { ...e, role: ev.target.value } })}>{Object.entries(ROLE_LABEL).filter(([k]) => k !== "admin").map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select></Field>
@@ -1074,6 +1219,9 @@ function App() {
         // completa fotos precargadas en registros que aún no tengan
         d.employees = d.employees.map((e) => (e.photo || !PHOTOS[e.name] ? e : { ...e, photo: PHOTOS[e.name] }));
         if (!d.users.some((u) => u.role === "colaborador")) d.users = [...d.users, DEFAULT_DATA.users.find((u) => u.id === "colaborador")];
+        if (!Array.isArray(d.policies)) d.policies = [];
+        const faltan = DEFAULT_DATA.departments.filter((x) => !d.departments.some((y) => y.toLowerCase() === x.toLowerCase()));
+        if (faltan.length) d.departments = [...d.departments, ...faltan].sort((a, b) => a.localeCompare(b));
         setData(d);
       } catch {
         let base = DEFAULT_DATA;
@@ -1182,7 +1330,7 @@ function App() {
     tabs: [...MODULES.filter((m) => m.group === g && mine.includes(m.id)).map((m) => [m.id, m.label]), ...(g === "Configuración" ? [["users", isAdmin ? "Usuarios" : "Mi cuenta"]] : [])],
   })).filter((g) => g.tabs.length);
   const tabOk = allowed.includes(tab) ? tab : firstTab(me);
-  const titles = { proyectos: "Proyectos IT", inventario: "Inventario", dashboard: "Dashboard de la mesa de ayuda", tickets: "Tickets", classifications: "Clasificaciones", employees: "Colaboradores", awards: "Empleados del mes", posts: "Avisos y frase del mes", bulletin: "Boletín en PDF", departments: "Departamentos", users: isAdmin ? "Usuarios" : "Mi cuenta" };
+  const titles = { proyectos: "Proyectos IT", inventario: "Inventario", dashboard: "Dashboard de la mesa de ayuda", tickets: "Tickets", classifications: "Clasificaciones", employees: "Colaboradores", awards: "Empleados del mes", posts: "Avisos y frase del mes", bulletin: "Boletín en PDF", policies: "Políticas por departamento", departments: "Departamentos", users: isAdmin ? "Usuarios" : "Mi cuenta" };
 
   return (
     <div className="hd" style={{ display: "flex", minHeight: "100vh" }}>
@@ -1213,6 +1361,7 @@ function App() {
         {tabOk === "awards" && <Awards data={data} onChange={(awards) => persist({ ...data, awards })} />}
         {tabOk === "posts" && <Posts data={data} me={me} onChange={(posts) => persist({ ...data, posts })} />}
         {tabOk === "bulletin" && <Bulletin month={month} setMonth={setMonth} pages={pdfs[month]} onSave={savePdf} onRemove={removePdf} />}
+        {tabOk === "policies" && <Policies data={data} me={me} onChange={(policies) => persist({ ...data, policies })} onError={setError} />}
         {tabOk === "users" && <Users data={data} me={me} onChange={(users) => persist({ ...data, users, tickets: data.tickets.map((t) => (t.assignedTo && !users.some((u) => u.id === t.assignedTo) ? { ...t, assignedTo: null, status: t.status === "Cerrado" ? t.status : "Nuevo" } : t)) })} />}
       </main>
     </div>
