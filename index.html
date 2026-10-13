@@ -89,7 +89,7 @@ window.LOGO_SRC = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAg
 const { useState, useEffect, useMemo } = React;
 
 // ============ Configuración ============
-const APP_VERSION = "2026-10-13.2";
+const APP_VERSION = "2026-10-13.3";
 const KEY = "intranet:data";
 const OLD_KEY = "helpdesk:data";
 const SHARED = true;
@@ -512,6 +512,162 @@ function PoliciesAll({ data, me, onBack }) {
       {view && <PdfViewer title={view.p.title} loading={view.loading} src={view.src || "about:blank"} onClose={close} canDownload={me.role === "admin"} fileName={view.p.fileName} />}
     </div>
   );
+}
+
+
+// ============ Lectura automática del boletín (texto + fotos) ============
+const normTxt = (t) => String(t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/\s+/g, " ").trim();
+const titleCase = (t) => String(t || "").toLowerCase().replace(/(^|[\s\-(])([a-záéíóúñü])/g, (m, a, b) => a + b.toUpperCase());
+const MONTH_RE = /(ENERO|FEBRERO|MARZO|ABRIL|MAYO|JUNIO|JULIO|AGOSTO|SEPTIEMBRE|SETIEMBRE|OCTUBRE|NOVIEMBRE|DICIEMBRE)/i;
+const monthIndex = (t) => { const m = normTxt(t).match(/(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)/); if (!m) return 0; const i = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"].indexOf(m[1] === "setiembre" ? "septiembre" : m[1]); return i + 1; };
+const mulM = (a, b) => [a[0]*b[0]+a[2]*b[1], a[1]*b[0]+a[3]*b[1], a[0]*b[2]+a[2]*b[3], a[1]*b[2]+a[3]*b[3], a[0]*b[4]+a[2]*b[5]+a[4], a[1]*b[4]+a[3]*b[5]+a[5]];
+const sameName = (a, b) => { const A = normTxt(a).split(" "), B = normTxt(b).split(" "); const [s, l] = A.length <= B.length ? [A, B] : [B, A]; return s.length >= 2 && s.every((w) => l.includes(w)); };
+
+// Convierte la imagen decodificada por pdf.js en una foto cuadrada de 220px
+const photoFromPdfImage = (img) => {
+  try {
+    const c = document.createElement("canvas"); c.width = img.width; c.height = img.height; const ctx = c.getContext("2d");
+    ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height);
+    if (img.bitmap) ctx.drawImage(img.bitmap, 0, 0);
+    else {
+      const n = img.width * img.height, d = img.data; const out = ctx.createImageData(img.width, img.height);
+      if (d.length === n * 4) out.data.set(d);
+      else if (d.length === n * 3) for (let i = 0, j = 0; i < n; i++, j += 3) { out.data[i*4] = d[j]; out.data[i*4+1] = d[j+1]; out.data[i*4+2] = d[j+2]; out.data[i*4+3] = 255; }
+      else if (d.length === n) for (let i = 0; i < n; i++) { out.data[i*4] = out.data[i*4+1] = out.data[i*4+2] = d[i]; out.data[i*4+3] = 255; }
+      else return "";
+      const tmp = document.createElement("canvas"); tmp.width = img.width; tmp.height = img.height; tmp.getContext("2d").putImageData(out, 0, 0); ctx.drawImage(tmp, 0, 0);
+    }
+    const sq = Math.min(c.width, c.height); const o = document.createElement("canvas"); o.width = o.height = 220;
+    o.getContext("2d").drawImage(c, (c.width - sq) / 2, 0, sq, sq, 0, 0, 220, 220);
+    return o.toDataURL("image/jpeg", 0.8);
+  } catch { return ""; }
+};
+
+async function photosOfPage(page, pdfjs) {
+  const ops = await page.getOperatorList(); const OPS = pdfjs.OPS;
+  let ctm = [1, 0, 0, 1, 0, 0]; const stack = []; const out = [];
+  for (let i = 0; i < ops.fnArray.length; i++) {
+    const fn = ops.fnArray[i], args = ops.argsArray[i];
+    if (fn === OPS.save) stack.push(ctm); else if (fn === OPS.restore) ctm = stack.pop() || ctm; else if (fn === OPS.transform) ctm = mulM(ctm, args);
+    else if (fn === OPS.paintImageXObject) {
+      let img = null; try { img = page.objs.get(args[0]); } catch { img = null; }
+      if (!img || !img.width) continue;
+      const w = Math.abs(ctm[0]) || Math.abs(ctm[2]), h = Math.abs(ctm[3]) || Math.abs(ctm[1]);
+      if (w < 60 || h < 60 || img.width < 120) continue;                    // íconos y adornos
+      if (w / h > 1.6 || h / w > 1.6) continue;                               // fotos de personas: casi cuadradas
+      out.push({ x: Math.min(ctm[4], ctm[4] + ctm[0]) + w / 2, y: Math.min(ctm[5], ctm[5] + ctm[3]) + h / 2, w, h, img });
+    }
+  }
+  return out;
+}
+
+// Lee el boletín y devuelve lo detectado; `month` es el mes del boletín (YYYY-MM)
+async function extraerBoletin(bytes, month) {
+  const pdfjs = await loadPdfJs();
+  const doc = await pdfjs.getDocument({ data: bytes }).promise;
+  const r = { aniversarios: [], ingresos: [], cumple: [], premiados: [], premiadosMes: "", frase: null, avisos: [], paginas: doc.numPages };
+  const [y, m] = month.split("-").map(Number);
+  for (let n = 1; n <= doc.numPages; n++) {
+    const page = await doc.getPage(n);
+    const tc = await page.getTextContent();
+    const items = tc.items.filter((it) => it.str && it.str.trim()).map((it) => ({ s: it.str.trim(), x: it.transform[4], y: it.transform[5], h: Math.abs(it.transform[3]) || it.height || 0, w: it.width || 0 }));
+    if (!items.length) continue;
+    const full = items.map((i) => i.s).join("  ");
+    const fullN = normTxt(full.replace(/ /g, ""));            // sin espacios: sirve para títulos con letras separadas
+    const esTitulo = (k) => fullN.includes(k);
+
+    // --- Páginas de personas (aniversarios / nuevos ingresos): fecha abajo de cada columna
+    if (esTitulo("aniversariosdeservicio") || esTitulo("nuevosingresos")) {
+      const tipo = esTitulo("nuevosingresos") ? "ingresos" : "aniversarios";
+      const fechas = items.filter((i) => /^\d{2}\/\d{2}\/\d{4}$/.test(i.s));
+      if (!fechas.length) continue;
+      const fotos = await photosOfPage(page, pdfjs);
+      const cols = fechas.map((f) => ({ cx: f.x + f.w / 2, fecha: f.s, lineas: [] }));
+      const minY = Math.min(...fechas.map((f) => f.y));
+      items.filter((i) => i.y > minY + 10 && i.y < minY + 130 && !/^\d{2}\/\d{2}\/\d{4}$/.test(i.s)).forEach((i) => {
+        const cx = i.x + i.w / 2; let best = cols[0]; cols.forEach((c) => { if (Math.abs(c.cx - cx) < Math.abs(best.cx - cx)) best = c; }); best.lineas.push(i);
+      });
+      cols.forEach((c) => {
+        if (!c.lineas.length) return;
+        c.lineas.sort((a, b) => b.y - a.y);
+        const dept = c.lineas[c.lineas.length - 1].s; const name = c.lineas.slice(0, -1).map((l) => l.s).join(" ").replace(/\s+/g, " ").trim();
+        if (!name) return;
+        const [dd, mm, yy] = c.fecha.split("/");
+        let foto = ""; if (fotos.length) { let best = null; fotos.forEach((f) => { const d = Math.abs(f.x - c.cx); if (f.y > minY && (!best || d < best.d)) best = { f, d }; }); if (best && best.d < 200) foto = photoFromPdfImage(best.f.img); }
+        r[tipo].push({ name, department: dept, hireDate: `${yy}-${mm}-${dd}`, photo: foto });
+      });
+      continue;
+    }
+    // --- Empleados del mes
+    if (esTitulo("empleadosdelmes")) {
+      const titulo = items.find((i) => /EMPLEADOS DEL MES/i.test(i.s)); r.premiadosMes = titulo ? titleCase((titulo.s.match(/MES DE\s+(\w+)/i) || [])[1] || "") : "";
+      const fotos = await photosOfPage(page, pdfjs);
+      const resto = items.filter((i) => i !== titulo);
+      const nombres = resto.filter((i) => i.s === titleCase(i.s) && /\s/.test(i.s));        // "Nombre Apellido" en mayúsculas/minúsculas
+      const deptos = resto.filter((i) => i.s === i.s.toUpperCase() && /[A-ZÁÉÍÓÚÑ]{3,}/.test(i.s) && !/EMPLEADOS/.test(i.s));
+      nombres.forEach((nm) => {
+        const cx = nm.x + nm.w / 2; let dep = null; deptos.forEach((d) => { const dcx = d.x + d.w / 2; if (!dep || Math.abs(dcx - cx) < Math.abs(dep.cx - cx)) dep = { d, cx: dcx }; });
+        let foto = ""; if (fotos.length) { let best = null; fotos.forEach((f) => { const d = Math.abs(f.x - cx); if (!best || d < best.d) best = { f, d }; }); if (best && best.d < 220) foto = photoFromPdfImage(best.f.img); }
+        r.premiados.push({ name: nm.s, department: dep ? titleCase(dep.d.s) : "", photo: foto });
+      });
+      continue;
+    }
+    // --- Cumpleañeros (letras separadas por espacios)
+    if (esTitulo("cumpleaneros")) {
+      const lineas = {}; items.forEach((i) => { const k = Math.round(i.y / 6); (lineas[k] = lineas[k] || []).push(i); });
+      Object.values(lineas).forEach((ln) => {
+        ln.sort((a, b) => a.x - b.x);
+        const txt = ln.map((i) => i.s).join("  ").replace(/(\S) (?=\S)/g, "$1").replace(/\s{2,}/g, " ").trim();
+        const mm = txt.match(/^(.+?)\s*\((.+?)\)\s*-\s*(\d{1,2})$/);
+        if (mm) r.cumple.push({ name: titleCase(mm[1].trim()), department: titleCase(mm[2].trim()), birthDay: +mm[3], birthMonth: m });
+      });
+      continue;
+    }
+    // --- Portada: frase del mes
+    if (n === 1) {
+      const lns = items.filter((i) => !MONTH_RE.test(i.s) && !/^\d{4}$/.test(i.s)).sort((a, b) => b.y - a.y);
+      const quote = lns.filter((i) => !/^[-–—]/.test(i.s)).map((i) => i.s).join(" ").replace(/[“”"]/g, "").trim();
+      const autor = (lns.find((i) => /^[-–—]/.test(i.s)) || {}).s;
+      if (quote) r.frase = { title: quote, body: autor ? autor.replace(/^[-–—]\s*/, "") : "" };
+      continue;
+    }
+    // --- Páginas de texto (efemérides, avisos, concientización)
+    const lns = items.slice().sort((a, b) => b.y - a.y || a.x - b.x);
+    if (lns.length < 2 || full.length < 60) continue;
+    const grande = lns.reduce((a, b) => (b.h > a.h ? b : a), lns[0]);
+    const titulo = lns.filter((i) => Math.abs(i.y - grande.y) < 12).map((i) => i.s).join(" ").replace(/\s{2,}/g, " ");
+    const tipo = /concientiza|concientíza/i.test(full) ? "Concientización" : "Efeméride";
+    const bodyL = {}; lns.filter((i) => Math.abs(i.y - grande.y) >= 12).forEach((i) => { const k = Math.round(i.y / 8); (bodyL[k] = bodyL[k] || []).push(i); });
+    const body = Object.keys(bodyL).sort((a, b) => b - a).map((k) => bodyL[k].sort((a, b) => a.x - b.x).map((i) => i.s).join(" ")).join("\n").replace(/[ \t]{2,}/g, " ");
+    r.avisos.push({ type: tipo, title: titulo.replace(/[¡!]{2,}/g, "").trim() || `Aviso (página ${n})`, body });
+  }
+  return r;
+}
+
+// Aplica lo detectado a los datos de la intranet (colaboradores, premiados, avisos)
+function aplicarExtraccion(data, r, month, by) {
+  let employees = data.employees.map((e) => ({ ...e })); const posts = [...data.posts]; let awards = [...data.awards];
+  const [y, m] = month.split("-").map(Number);
+  const find = (name) => employees.find((e) => normTxt(e.name) === normTxt(name)) || employees.find((e) => sameName(e.name, name));
+  const upsert = (p) => {
+    let e = find(p.name);
+    if (!e) { e = { id: uid(), name: p.name, department: p.department || "", hireDate: "", birthDay: "", birthMonth: "", photo: "", active: true }; employees.push(e); }
+    if (p.department && !e.department) e.department = p.department;
+    if (p.hireDate && !e.hireDate) e.hireDate = p.hireDate;
+    if (p.birthDay) { e.birthDay = p.birthDay; e.birthMonth = p.birthMonth; }
+    if (p.photo && !e.photo) e.photo = p.photo;
+    return e;
+  };
+  [...r.aniversarios, ...r.ingresos, ...r.cumple].forEach(upsert);
+  if (r.premiados.length) {
+    const pm = m === 1 ? `${y - 1}-12` : `${y}-${pad(m - 1)}`;
+    const premMes = monthIndex(r.premiadosMes) ? `${monthIndex(r.premiadosMes) < m || m === 1 ? y : y - 1}-${pad(monthIndex(r.premiadosMes))}` : pm;
+    r.premiados.forEach((p) => { const e = upsert(p); if (!awards.some((a) => a.month === premMes && a.employeeId === e.id)) awards.push({ id: uid(), month: premMes, employeeId: e.id }); });
+  }
+  const addPost = (type, title, body) => { if (!title || posts.some((x) => x.month === month && normTxt(x.title) === normTxt(title))) return; posts.push({ id: uid(), month, type, title, body: body || "", createdAt: new Date().toISOString(), by }); };
+  if (r.frase) addPost("Frase del mes", r.frase.title, r.frase.body);
+  r.avisos.forEach((a) => addPost(a.type, a.title, a.body));
+  return { ...data, employees, posts, awards };
 }
 
 // ============ Portada pública ============
@@ -1206,14 +1362,21 @@ function Posts({ data, me, onChange }) {
 }
 
 // ============ RH: Boletín PDF ============
-function Bulletin({ month, setMonth, pages, onSave, onRemove }) {
+function Bulletin({ month, setMonth, pages, onSave, onRemove, onApply }) {
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
+  const [det, setDet] = useState(null);
   const onFile = async (e) => {
     const f = e.target.files?.[0]; if (!f) return;
     if (f.type !== "application/pdf") return setMsg("El archivo debe ser PDF.");
     setBusy(true); setMsg("Convirtiendo las páginas del boletín… esto puede tardar unos segundos.");
-    try { const imgs = await pdfToImages(new Uint8Array(await f.arrayBuffer())); await onSave(imgs); setMsg(`Boletín publicado: ${imgs.length} páginas.`); }
+    try {
+      const bytes = new Uint8Array(await f.arrayBuffer());
+      const imgs = await pdfToImages(bytes); await onSave(imgs);
+      setMsg(`Boletín publicado: ${imgs.length} páginas. Leyendo su contenido…`);
+      try { const r = await extraerBoletin(new Uint8Array(await f.arrayBuffer()), month); setDet(r); setMsg(`Boletín publicado: ${imgs.length} páginas. Revisa abajo lo que se detectó y confirma para llenar la portada.`); }
+      catch { setMsg(`Boletín publicado: ${imgs.length} páginas. No se pudo leer el contenido automáticamente; captúralo en Colaboradores y Avisos.`); }
+    }
     catch (err) { setMsg(err.message || "No se pudo procesar el PDF."); }
     setBusy(false);
   };
@@ -1234,6 +1397,27 @@ function Bulletin({ month, setMonth, pages, onSave, onRemove }) {
         </div>
       ) : <Field label="Subir PDF"><input type="file" accept="application/pdf" onChange={onFile} disabled={busy} /></Field>}
       {msg && <div style={{ fontSize: 13, color: msg.startsWith("Boletín") || msg.startsWith("Convirtiendo") ? "#1F6B3E" : "#B3261E" }}>{msg}</div>}
+      {det && (() => {
+        const total = det.aniversarios.length + det.ingresos.length + det.cumple.length + det.premiados.length + (det.frase ? 1 : 0) + det.avisos.length;
+        const Person = ({ p, extra }) => <div className="person" style={{ padding: "6px 0" }}><Avatar e={p} size={34} /><div style={{ fontSize: 13 }}><b>{p.name}</b><div style={{ color: "#6B7684", fontSize: 12 }}>{p.department}{extra ? ` · ${extra}` : ""}</div></div></div>;
+        return (
+          <div className="card" style={{ padding: 16, borderColor: "#1F3F73", background: "#F7F9FC" }}>
+            <h3 style={{ margin: "0 0 4px", fontSize: 15, fontWeight: 600 }}>Contenido detectado en el PDF</h3>
+            <p style={{ margin: "0 0 10px", fontSize: 12, color: "#6B7684" }}>Revisa que esté bien. Al confirmar, los colaboradores nuevos se dan de alta, los existentes se completan (fecha, foto, cumpleaños) y se publican la frase y los avisos de {monthLabel(month)}. Nada se borra.</p>
+            {total === 0 && <div style={{ fontSize: 13, color: "#9A4B00" }}>No se reconoció contenido con el formato habitual del boletín. Captúralo manualmente.</div>}
+            {det.frase && <div style={{ fontSize: 13, marginBottom: 8 }}><b>Frase del mes:</b> “{det.frase.title}” {det.frase.body && <span style={{ color: "#6B7684" }}>— {det.frase.body}</span>}</div>}
+            {det.ingresos.length > 0 && <div><b style={{ fontSize: 13 }}>Nuevos ingresos ({det.ingresos.length})</b>{det.ingresos.map((p, i) => <Person key={i} p={p} extra={fmtDay(p.hireDate)} />)}</div>}
+            {det.aniversarios.length > 0 && <div><b style={{ fontSize: 13 }}>Aniversarios ({det.aniversarios.length})</b>{det.aniversarios.map((p, i) => <Person key={i} p={p} extra={`desde ${fmtDay(p.hireDate)}`} />)}</div>}
+            {det.premiados.length > 0 && <div><b style={{ fontSize: 13 }}>Empleados del mes{det.premiadosMes ? ` de ${det.premiadosMes.toLowerCase()}` : ""} ({det.premiados.length})</b>{det.premiados.map((p, i) => <Person key={i} p={p} />)}</div>}
+            {det.cumple.length > 0 && <div><b style={{ fontSize: 13 }}>Cumpleañeros ({det.cumple.length})</b><div style={{ fontSize: 13, color: "#374151" }}>{det.cumple.map((p) => `${p.birthDay} · ${p.name} (${p.department})`).join(" — ")}</div></div>}
+            {det.avisos.length > 0 && <div style={{ marginTop: 6 }}><b style={{ fontSize: 13 }}>Avisos y efemérides ({det.avisos.length})</b>{det.avisos.map((a, i) => <div key={i} style={{ fontSize: 13 }}><span className="pill" style={{ background: "#E3ECF7", color: "#1F3F73", marginRight: 6 }}>{a.type}</span>{a.title}</div>)}</div>}
+            <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+              <button className="btn btn-primary" disabled={total === 0} onClick={() => { onApply(det); setDet(null); setMsg("Portada actualizada con el contenido del boletín."); }}>Confirmar y llenar la portada</button>
+              <button className="btn btn-ghost" onClick={() => setDet(null)}>Omitir</button>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
@@ -1402,7 +1586,7 @@ function App() {
         {tabOk === "employees" && <Employees data={data} onChange={setEmployees} />}
         {tabOk === "awards" && <Awards data={data} onChange={(awards) => persist({ ...data, awards })} />}
         {tabOk === "posts" && <Posts data={data} me={me} onChange={(posts) => persist({ ...data, posts })} />}
-        {tabOk === "bulletin" && <Bulletin month={month} setMonth={setMonth} pages={pdfs[month]} onSave={savePdf} onRemove={removePdf} />}
+        {tabOk === "bulletin" && <Bulletin month={month} setMonth={setMonth} pages={pdfs[month]} onSave={savePdf} onRemove={removePdf} onApply={(r) => persist(aplicarExtraccion(data, r, month, me.name))} />}
         {tabOk === "policies" && <Policies data={data} me={me} onChange={(policies) => persist({ ...data, policies })} onError={setError} />}
         {tabOk === "users" && <Users data={data} me={me} onChange={(users) => persist({ ...data, users, tickets: data.tickets.map((t) => (t.assignedTo && !users.some((u) => u.id === t.assignedTo) ? { ...t, assignedTo: null, status: t.status === "Cerrado" ? t.status : "Nuevo" } : t)) })} />}
       </main>
