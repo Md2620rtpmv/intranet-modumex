@@ -89,7 +89,7 @@ window.LOGO_SRC = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAg
 const { useState, useEffect, useMemo } = React;
 
 // ============ Configuración ============
-const APP_VERSION = "2026-10-13.3";
+const APP_VERSION = "2026-10-13.4";
 const KEY = "intranet:data";
 const OLD_KEY = "helpdesk:data";
 const SHARED = true;
@@ -353,19 +353,27 @@ function PdfViewer({ title, src, loading, onClose, canDownload, fileName }) {
         <button className="btn btn-sm" onClick={onClose} style={{ background: "#fff" }}>Cerrar</button>
       </div>
       {loading ? <div style={{ color: "#C9D6E5", margin: "auto" }}>Cargando documento…</div>
+        : !src || src === "about:blank" ? <div style={{ color: "#F5B7B1", margin: "auto" }}>No se pudo recuperar el documento. Pide al administrador que lo vuelva a cargar.</div>
         : <iframe title={title} src={src + "#toolbar=0&navpanes=0"} style={{ flex: 1, border: 0, borderRadius: 8, background: "#fff" }} onClick={(e) => e.stopPropagation()} />}
     </div>
   );
 }
 
+// El navegador no muestra PDF desde una data: URL dentro de un marco; se convierte a blob: URL
+const dataUrlToBlobUrl = (dataUrl) => {
+  const [head, b64] = dataUrl.split(","); const mime = (head.match(/data:([^;]+)/) || [])[1] || "application/pdf";
+  const bin = atob(b64); const bytes = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return URL.createObjectURL(new Blob([bytes], { type: mime }));
+};
 function usePolicyViewer() {
   const [view, setView] = useState(null);
   const open = async (p) => {
     setView({ p, loading: true, src: null });
-    try { const r = await window.storage.get(POLICY_KEY(p.id), SHARED); setView({ p, loading: false, src: r.value }); }
+    try { const r = await window.storage.get(POLICY_KEY(p.id), SHARED); setView({ p, loading: false, src: dataUrlToBlobUrl(r.value) }); }
     catch { setView({ p, loading: false, src: null, error: true }); }
   };
-  return { view, open, close: () => setView(null) };
+  const close = () => { setView((v) => { if (v && v.src && v.src.startsWith("blob:")) { try { URL.revokeObjectURL(v.src); } catch { /* ya liberado */ } } return null; }); };
+  return { view, open, close };
 }
 
 function PoliciesSection({ data, me }) {
