@@ -89,7 +89,7 @@ window.LOGO_SRC = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAg
 const { useState, useEffect, useMemo } = React;
 
 // ============ Configuración ============
-const APP_VERSION = "2026-10-15.1";
+const APP_VERSION = "2026-10-15.2";
 const KEY = "intranet:data";
 const OLD_KEY = "helpdesk:data";
 const SHARED = true;
@@ -686,6 +686,10 @@ const INV_KEY = "modumex:inventario";
 const FUEL = ["Vacío", "1/4", "1/2", "3/4", "Lleno"];
 const LOAN_STATUS = { solicitado: { l: "Pendiente de aprobar", bg: "#FFF1E0", fg: "#9A4B00" }, en_uso: { l: "En uso", bg: "#E3ECF7", fg: "#1F3F73" }, devuelto: { l: "Devuelto", bg: "#E4F3EA", fg: "#1F6B3E" }, rechazado: { l: "Rechazado", bg: "#FDECEA", fg: "#B3261E" }, cancelado: { l: "Cancelado", bg: "#F1F3F6", fg: "#6B7684" } };
 const nowLocal = () => { const d = new Date(); d.setSeconds(0, 0); return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16); };
+const todayLocal = () => nowLocal().slice(0, 10);
+const timeLocal = () => nowLocal().slice(11, 16);
+const addDays = (iso, n) => new Date(new Date(iso).getTime() + n * 864e5).toISOString();
+const overdue = (l) => l.status === "en_uso" && l.regresoPrevisto && new Date() > new Date(l.regresoPrevisto);
 const localToIso = (v) => (v ? new Date(v).toISOString() : new Date().toISOString());
 const fmtDT = (iso) => (iso ? new Date(iso).toLocaleString("es-MX", { day: "2-digit", month: "short", year: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—");
 const hoursSince = (iso) => (new Date() - new Date(iso)) / 36e5;
@@ -706,16 +710,18 @@ const activeLoanOf = (loans, vehicleId) => loans.find((l) => l.vehicleId === veh
 const LoanPill = ({ status }) => { const st = LOAN_STATUS[status] || LOAN_STATUS.cancelado; return <span className="pill" style={{ background: st.bg, color: st.fg }}>{st.l}</span>; };
 
 function ReturnForm({ loan, onSave, onClose }) {
-  const [f, setF] = useState({ at: nowLocal(), km: "", fuel: "1/2", obs: "" });
+  const [f, setF] = useState({ fecha: todayLocal(), hora: timeLocal(), km: "", fuel: "1/2", obs: "" });
   const kmOk = f.km !== "" && +f.km >= +(loan.kmSalida || 0);
+  const ok = kmOk && f.fecha && f.hora;
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(20,30,45,.45)", zIndex: 60, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onClick={onClose}>
-      <div className="card hd" style={{ width: "min(520px, 100%)", padding: 24, display: "grid", gap: 12 }} onClick={(e) => e.stopPropagation()}>
+      <div className="card hd" style={{ width: "min(560px, 100%)", minHeight: "auto", padding: 20, display: "grid", gap: 10, maxHeight: "92vh", overflowY: "auto" }} onClick={(e) => e.stopPropagation()}>
         <h3 style={{ margin: 0, fontSize: 17, fontWeight: 600 }}>Registrar devolución</h3>
         <div style={{ fontSize: 13, color: "#6B7684" }}>{loan.vehiculo} · salió con {Number(loan.kmSalida || 0).toLocaleString("es-MX")} km el {fmtDT(loan.salida)}</div>
-        <div className="grid2">
-          <Field label="Fecha y hora de devolución"><input type="datetime-local" value={f.at} onChange={(e) => setF({ ...f, at: e.target.value })} /></Field>
-          <Field label="Kilometraje al regresar"><input type="number" min={loan.kmSalida || 0} value={f.km} onChange={(e) => setF({ ...f, km: e.target.value })} placeholder={`Mayor o igual a ${loan.kmSalida || 0}`} /></Field>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+          <Field label="Fecha de devolución"><input type="date" value={f.fecha} onChange={(e) => setF({ ...f, fecha: e.target.value })} /></Field>
+          <Field label="Hora de devolución"><input type="time" value={f.hora} onChange={(e) => setF({ ...f, hora: e.target.value })} /></Field>
+          <Field label="Kilometraje al regresar"><input type="number" min={loan.kmSalida || 0} value={f.km} onChange={(e) => setF({ ...f, km: e.target.value })} placeholder={`≥ ${loan.kmSalida || 0}`} /></Field>
         </div>
         <Field label="Nivel de combustible">
           <div style={{ display: "flex", gap: 6 }}>{FUEL.map((x) => <button key={x} type="button" className="btn btn-sm" onClick={() => setF({ ...f, fuel: x })} style={{ flex: 1, background: f.fuel === x ? "#1F3F73" : "#fff", color: f.fuel === x ? "#fff" : "#1B2430", borderColor: f.fuel === x ? "#1F3F73" : "#C9D1DB" }}>{x}</button>)}</div>
@@ -723,7 +729,7 @@ function ReturnForm({ loan, onSave, onClose }) {
         <Field label="Observaciones (golpes, fallas, incidencias)"><textarea rows={3} value={f.obs} onChange={(e) => setF({ ...f, obs: e.target.value })} /></Field>
         {f.km !== "" && !kmOk && <div style={{ fontSize: 13, color: "#B3261E" }}>El kilometraje de regreso no puede ser menor al de salida.</div>}
         <div style={{ display: "flex", gap: 8 }}>
-          <button className="btn btn-primary" disabled={!kmOk} onClick={() => onSave({ at: localToIso(f.at), km: +f.km, fuel: f.fuel, obs: f.obs.trim() })}>Guardar devolución</button>
+          <button className="btn btn-primary" disabled={!ok} onClick={() => onSave({ at: localToIso(`${f.fecha}T${f.hora}`), km: +f.km, fuel: f.fuel, obs: f.obs.trim() })}>Guardar devolución</button>
           <button className="btn btn-ghost" onClick={onClose}>Cancelar</button>
         </div>
       </div>
@@ -737,12 +743,12 @@ function LoanRow({ l, me, onReturn, onApprove, onReject, onCancel, compact }) {
     <div style={{ padding: "10px 0", borderTop: "1px solid #EEF1F5", display: "grid", gap: 4 }}>
       <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
         <b style={{ fontSize: 14 }}>{l.vehiculo}</b><LoanPill status={l.status} />
-        <span style={{ fontSize: 13, color: "#6B7684" }}>{compact ? "" : `${l.userName}${l.department ? " · " + l.department : ""} · `}salida {fmtDT(l.salida)}{l.devolucion ? ` · regreso ${fmtDT(l.devolucion.at)}` : ""}</span>
+        <span style={{ fontSize: 13, color: "#6B7684" }}>{compact ? "" : `${l.userName}${l.department ? " · " + l.department : ""} · `}salida {fmtDT(l.salida)}{l.dias ? ` · ${l.dias} día(s), regreso previsto ${fmtDT(l.regresoPrevisto)}` : ""}{l.devolucion ? ` · devuelto ${fmtDT(l.devolucion.at)}` : ""}</span>
       </div>
       <div style={{ fontSize: 13, color: "#374151" }}>Motivo: {l.motivo}{l.destino ? ` · Destino: ${l.destino}` : ""}{l.kmSalida ? ` · Km salida ${Number(l.kmSalida).toLocaleString("es-MX")}` : ""}{l.devolucion ? ` · Km regreso ${Number(l.devolucion.km).toLocaleString("es-MX")} (${l.devolucion.km - l.kmSalida} km) · combustible ${l.devolucion.fuel}` : ""}</div>
       {l.devolucion && l.devolucion.obs && <div style={{ fontSize: 13, color: "#9A4B00" }}>Observaciones: {l.devolucion.obs}</div>}
       {l.status === "rechazado" && l.rechazo && <div style={{ fontSize: 13, color: "#B3261E" }}>Rechazado por {l.aprobadoPor}: {l.rechazo}</div>}
-      {l.status === "en_uso" && hoursSince(l.salida) > 24 && !compact && <div style={{ fontSize: 12, color: "#B3261E" }}>Lleva más de {Math.floor(hoursSince(l.salida) / 24)} día(s) fuera.</div>}
+      {overdue(l) && <div style={{ fontSize: 12, color: "#B3261E", fontWeight: 600 }}>Vencido: debía regresar el {fmtDT(l.regresoPrevisto)}.</div>}
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
         {l.status === "solicitado" && onApprove && <button className="btn btn-primary btn-sm" onClick={() => onApprove(l)}>Aprobar</button>}
         {l.status === "solicitado" && onReject && <button className="btn btn-danger btn-sm" onClick={() => { const r = prompt("Motivo del rechazo:"); if (r !== null) onReject(l, r.trim()); }}>Rechazar</button>}
@@ -756,7 +762,7 @@ function LoanRow({ l, me, onReturn, onApprove, onReject, onCancel, compact }) {
 function useLoans(data, me, onChange) {
   const loans = data.loans || [];
   const save = (next) => onChange(next);
-  const request = (v, f) => save([...loans, { id: uid(), vehicleId: v.id, vehiculo: vehLabel(v), placas: v.placas, userId: me.id, userName: me.name, department: me.department || "", motivo: f.motivo, destino: f.destino, salida: localToIso(f.salida), kmSalida: +f.km || 0, status: "solicitado", createdAt: new Date().toISOString() }]);
+  const request = (v, f) => { const salida = localToIso(`${f.fecha}T${f.hora}`); save([...loans, { id: uid(), vehicleId: v.id, vehiculo: vehLabel(v), placas: v.placas, userId: me.id, userName: me.name, department: me.department || "", motivo: f.motivo.trim(), destino: f.destino.trim(), salida, dias: +f.dias, regresoPrevisto: addDays(salida, +f.dias), kmSalida: +f.km || 0, status: "solicitado", createdAt: new Date().toISOString() }]); };
   const approve = (l) => save(loans.map((x) => (x.id === l.id ? { ...x, status: "en_uso", aprobadoPor: me.name, aprobadoAt: new Date().toISOString() } : x)));
   const reject = (l, r) => save(loans.map((x) => (x.id === l.id ? { ...x, status: "rechazado", aprobadoPor: me.name, aprobadoAt: new Date().toISOString(), rechazo: r } : x)));
   const cancel = (l) => save(loans.map((x) => (x.id === l.id ? { ...x, status: "cancelado" } : x)));
@@ -774,7 +780,8 @@ function VehiclesScreen({ data, me, onChange, onBack }) {
   useEffect(() => { reload(); }, []);
   const mine = L.loans.filter((l) => l.userId === me.id).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   const active = mine.filter((l) => l.status === "solicitado" || l.status === "en_uso");
-  const submit = () => { if (!form.motivo.trim()) return; L.request(form.v, form); setForm(null); };
+  const formOk = form && form.motivo.trim() && form.destino.trim() && form.fecha && form.hora && form.km !== "" && +form.dias >= 1;
+  const submit = () => { if (!formOk) return; L.request(form.v, form); setForm(null); };
   return (
     <div>
       <header style={{ background: "#1F3F73", color: "#fff" }}>
@@ -807,7 +814,7 @@ function VehiclesScreen({ data, me, onChange, onBack }) {
                   <div style={{ fontFamily: "monospace", fontSize: 14, letterSpacing: ".06em" }}>{v.placas || "sin placas"}</div>
                   <div style={{ fontSize: 12, color: "#6B7684" }}>{v.kilometraje ? `${Number(v.kilometraje).toLocaleString("es-MX")} km` : "km no registrado"}{v.bodega ? ` · ${v.bodega}` : ""}</div>
                   {a ? <div style={{ fontSize: 13 }}><LoanPill status={a.status} /> <span style={{ color: "#6B7684" }}>{a.userId === me.id ? "por ti" : `por ${a.userName}`} · {fmtDT(a.salida)}</span></div>
-                    : <button className="btn btn-primary btn-sm" onClick={() => setForm({ v, motivo: "", destino: "", salida: nowLocal(), km: v.kilometraje || "" })} style={{ justifySelf: "start" }}>Solicitar</button>}
+                    : <button className="btn btn-primary btn-sm" onClick={() => setForm({ v, motivo: "", destino: "", fecha: todayLocal(), hora: timeLocal(), dias: 1, km: v.kilometraje || "" })} style={{ justifySelf: "start" }}>Solicitar</button>}
                 </div>
               );
             })}
@@ -822,17 +829,22 @@ function VehiclesScreen({ data, me, onChange, onBack }) {
       </main>
       {form && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(20,30,45,.45)", zIndex: 60, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onClick={() => setForm(null)}>
-          <div className="card hd" style={{ width: "min(520px, 100%)", padding: 24, display: "grid", gap: 12 }} onClick={(e) => e.stopPropagation()}>
+          <div className="card hd" style={{ width: "min(560px, 100%)", minHeight: "auto", padding: 20, display: "grid", gap: 10, maxHeight: "92vh", overflowY: "auto" }} onClick={(e) => e.stopPropagation()}>
             <h3 style={{ margin: 0, fontSize: 17, fontWeight: 600 }}>Solicitar {vehLabel(form.v)}</h3>
-            <div style={{ fontSize: 13, color: "#6B7684" }}>Conductor: {me.name}{me.department ? ` · ${me.department}` : ""}</div>
+            <div style={{ fontSize: 13, color: "#6B7684", marginTop: -4 }}>Conductor: {me.name}{me.department ? ` · ${me.department}` : ""} · todos los campos son obligatorios</div>
             <Field label="Motivo de la solicitud"><input value={form.motivo} onChange={(e) => setForm({ ...form, motivo: e.target.value })} placeholder="Ej. Entrega de material a cliente" /></Field>
-            <Field label="Destino (opcional)"><input value={form.destino} onChange={(e) => setForm({ ...form, destino: e.target.value })} placeholder="Ej. Planta Apodaca" /></Field>
+            <Field label="Destino"><input value={form.destino} onChange={(e) => setForm({ ...form, destino: e.target.value })} placeholder="Ej. Planta Apodaca" /></Field>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+              <Field label="Fecha de salida"><input type="date" value={form.fecha} onChange={(e) => setForm({ ...form, fecha: e.target.value })} /></Field>
+              <Field label="Hora de salida"><input type="time" value={form.hora} onChange={(e) => setForm({ ...form, hora: e.target.value })} /></Field>
+              <Field label="Días de préstamo"><input type="number" min="1" step="1" value={form.dias} onChange={(e) => setForm({ ...form, dias: e.target.value })} /></Field>
+            </div>
             <div className="grid2">
-              <Field label="Fecha y hora de salida"><input type="datetime-local" value={form.salida} onChange={(e) => setForm({ ...form, salida: e.target.value })} /></Field>
               <Field label="Kilometraje al salir"><input type="number" min="0" value={form.km} onChange={(e) => setForm({ ...form, km: e.target.value })} /></Field>
+              <Field label="Regreso previsto"><div style={{ padding: "9px 0", fontSize: 14, fontWeight: 600 }}>{form.fecha && form.hora && +form.dias >= 1 ? fmtDT(addDays(localToIso(`${form.fecha}T${form.hora}`), +form.dias)) : "—"}</div></Field>
             </div>
             <div style={{ display: "flex", gap: 8 }}>
-              <button className="btn btn-primary" disabled={!form.motivo.trim()} onClick={submit}>Enviar solicitud</button>
+              <button className="btn btn-primary" disabled={!formOk} onClick={submit}>Enviar solicitud</button>
               <button className="btn btn-ghost" onClick={() => setForm(null)}>Cancelar</button>
             </div>
           </div>
@@ -862,7 +874,7 @@ function Bitacora({ data, me, onChange }) {
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
         <Kpi label="Pendientes de aprobar" value={pend.length} color={pend.length ? "#9A4B00" : "#1B2430"} />
         <Kpi label="Vehículos en uso" value={uso.length} color="#1F3F73" />
-        <Kpi label="Fuera más de 24 h" value={uso.filter((l) => hoursSince(l.salida) > 24).length} color="#B3261E" />
+        <Kpi label="Vencidos (no devueltos a tiempo)" value={uso.filter(overdue).length} color="#B3261E" />
         <Kpi label="Préstamos este mes" value={L.loans.filter((l) => l.salida.slice(0, 7) === monthKeyOf() && l.status !== "rechazado" && l.status !== "cancelado").length} />
       </div>
       <div className="grid2" style={{ alignItems: "start" }}>
