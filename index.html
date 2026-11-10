@@ -89,7 +89,7 @@ window.LOGO_SRC = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAg
 const { useState, useEffect, useMemo } = React;
 
 // ============ Configuración ============
-const APP_VERSION = "2026-10-15.2";
+const APP_VERSION = "2026-11-09.1";
 const KEY = "intranet:data";
 const OLD_KEY = "helpdesk:data";
 const SHARED = true;
@@ -98,7 +98,7 @@ const MONTHS = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", 
 const STATUSES = ["Nuevo", "Asignado", "En proceso", "Cerrado"];
 const PRIORITIES = ["Baja", "Media", "Alta"];
 const POST_TYPES = ["Frase del mes", "Efeméride", "Aviso", "Concientización"];
-const ROLE_LABEL = { admin: "Administrador", it: "Soporte IT", inventarios: "Inventarios", rh: "Recursos Humanos", colaborador: "Colaborador" };
+const ROLE_LABEL = { admin: "Administrador", it: "Soporte IT", inventarios: "Inventarios", rh: "Recursos Humanos", mtto_jefe: "Jefe de mantenimiento", mtto: "Técnico de mantenimiento", colaborador: "Colaborador" };
 const SESSION_KEY = "intranet:session";
 // Módulos del panel que se pueden asignar usuario por usuario
 const MODULES = [
@@ -113,11 +113,14 @@ const MODULES = [
   { id: "posts", label: "Avisos y frase del mes", group: "Comunicación interna" },
   { id: "bulletin", label: "Boletín PDF", group: "Comunicación interna" },
   { id: "policies", label: "Políticas", group: "Comunicación interna" },
+  { id: "mtto_dashboard", label: "Dashboard", group: "Mantenimiento" },
+  { id: "mtto_tickets", label: "Tickets de mantenimiento", group: "Mantenimiento" },
+  { id: "mtto_cats", label: "Clasificaciones mtto.", group: "Mantenimiento" },
   { id: "departments", label: "Departamentos", group: "Configuración" },
 ];
 const ALL_MODULES = MODULES.map((m) => m.id);
 // Lo que ve cada perfil si el administrador no le asigna módulos a la medida
-const ROLE_MODULES = { admin: ALL_MODULES, it: ["tickets", "proyectos", "inventario", "bitacora"], inventarios: ["inventario"], rh: ["employees", "awards", "posts", "bulletin", "departments"], colaborador: [] };
+const ROLE_MODULES = { admin: ALL_MODULES, it: ["tickets", "proyectos", "inventario", "bitacora"], inventarios: ["inventario"], rh: ["employees", "awards", "posts", "bulletin", "departments"], mtto_jefe: ["mtto_dashboard", "mtto_tickets", "mtto_cats"], mtto: ["mtto_tickets"], colaborador: [] };
 const modulesOf = (u) => (!u ? [] : u.role === "admin" ? ALL_MODULES : Array.isArray(u.modules) ? u.modules.filter((m) => ALL_MODULES.includes(m)) : ROLE_MODULES[u.role] || []);
 const firstTab = (u) => modulesOf(u)[0] || "users";
 const LOGO_SRC = (typeof window !== "undefined" && window.LOGO_SRC) || "";
@@ -196,6 +199,7 @@ const DEFAULT_DATA = {
   nextFolio: 1,
   policies: [],
   loans: [],
+  mtto: { tickets: [], nextFolio: 1, classifications: ["Eléctrico", "Hidráulico / Plomería", "Maquinaria", "Infraestructura / Obra civil", "Aire acondicionado", "Mobiliario", "Otro"] },
   employees: SEED_EMPLOYEES,
   awards: [
     { id: uid(), month: "2026-08", employeeId: byName("Inocencio Compean") },
@@ -902,8 +906,243 @@ function Bitacora({ data, me, onChange }) {
   );
 }
 
+
+// ============ Tickets de mantenimiento ============
+const MT_STATUSES = ["Nuevo", "Asignado", "En proceso", "En espera", "Resuelto", "Cerrado"];
+const MT_STATUS_STYLE = { ...STATUS_STYLE, "En espera": { bg: "#FFF8E1", fg: "#7A5A00" }, Resuelto: { bg: "#E0F2F1", fg: "#00695C" } };
+const MT_URGENCY = ["Baja", "Media", "Alta", "Crítica"];
+const MT_URGENCY_STYLE = { Baja: "#7A8797", Media: "#C77B12", Alta: "#B3261E", Crítica: "#7B1FA2" };
+const MT_SLA_H = { Baja: 168, Media: 72, Alta: 24, Crítica: 4 };     // horas comprometidas de solución
+const MT_LOG_TYPES = ["Diagnóstico", "Avance", "En espera de refacción", "En espera de proveedor", "Resuelto", "Comentario"];
+const MT_BODEGAS = ["Leeder", "Superior", "Almacén", "Herrajes", "Costa Rica"];
+const mtFolio = (n) => `MT-${String(n).padStart(4, "0")}`;
+const MtPill = ({ status }) => { const s = MT_STATUS_STYLE[status] || { bg: "#EEE", fg: "#333" }; return <span className="pill" style={{ background: s.bg, color: s.fg }}>{status}</span>; };
+const isMtto = (me) => me.role === "admin" || me.role === "mtto_jefe" || me.role === "mtto";
+const canAssignMt = (me) => me.role === "admin" || me.role === "mtto_jefe";
+const mtDue = (t) => new Date(new Date(t.createdAt).getTime() + (MT_SLA_H[t.urgency] || 72) * 36e5);
+const mtOverdue = (t) => !["Resuelto", "Cerrado"].includes(t.status) && new Date() > mtDue(t);
+const mtActive = (t) => !["Cerrado"].includes(t.status);
+
+function MtForm({ data, me, onSubmit, onBack }) {
+  const cats = data.mtto.classifications;
+  const [f, setF] = useState({ requester: me.role === "colaborador" && me.id === "colaborador" ? "" : me.name, department: me.department || data.departments[0] || "", bodega: MT_BODEGAS[0], urgency: "Media", classification: cats[0] || "", location: "", subject: "", description: "", photo: "" });
+  const [done, setDone] = useState(null); const [err, setErr] = useState("");
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  const valid = f.requester.trim() && f.department && f.bodega && f.urgency && f.classification && f.subject.trim() && f.description.trim();
+  const onPhoto = async (e) => { const file = e.target.files?.[0]; if (!file) return; try { setF({ ...f, photo: await readPhoto(file, 900) }); setErr(""); } catch { setErr("No se pudo leer la imagen."); } };
+  if (done) return (
+    <div className="card" style={{ maxWidth: 520, margin: "60px auto", padding: 32, textAlign: "center" }}>
+      <div style={{ fontSize: 13, color: "#6B7684" }}>Tu ticket de mantenimiento quedó registrado con el folio</div>
+      <div style={{ fontSize: 40, fontWeight: 700, color: "#1F3F73", margin: "8px 0 16px" }}>{done}</div>
+      <p style={{ fontSize: 14, color: "#4B5563", margin: "0 0 24px" }}>Mantenimiento lo revisará y podrás seguir el avance en “Mis tickets”.</p>
+      <div style={{ display: "flex", gap: 10, justifyContent: "center" }}><button className="btn btn-ghost" onClick={() => { setDone(null); setF({ ...f, subject: "", description: "", location: "", photo: "" }); }}>Levantar otro</button><button className="btn btn-primary" onClick={onBack}>Volver a la intranet</button></div>
+    </div>
+  );
+  return (
+    <div className="card" style={{ maxWidth: 680, margin: "40px auto", padding: 28 }}>
+      <button className="btn btn-ghost btn-sm" onClick={onBack} style={{ marginBottom: 16 }}>← Intranet</button>
+      <h1 style={{ fontSize: 24, fontWeight: 600, margin: "0 0 4px" }}>Ticket de mantenimiento</h1>
+      <p style={{ margin: "0 0 20px", color: "#6B7684", fontSize: 14 }}>Todos los campos son obligatorios, excepto ubicación y foto.</p>
+      <div style={{ display: "grid", gap: 14 }}>
+        <div className="grid2">
+          <Field label="Solicitante"><input value={f.requester} onChange={set("requester")} placeholder="Nombre y apellido" /></Field>
+          <Field label="Departamento"><select value={f.department} onChange={set("department")}>{data.departments.map((d) => <option key={d}>{d}</option>)}</select></Field>
+        </div>
+        <div className="grid2">
+          <Field label="Bodega"><select value={f.bodega} onChange={set("bodega")}>{MT_BODEGAS.map((d) => <option key={d}>{d}</option>)}</select></Field>
+          <Field label="Clasificación del ticket"><select value={f.classification} onChange={set("classification")}>{cats.map((c) => <option key={c}>{c}</option>)}</select></Field>
+        </div>
+        <Field label="Urgencia">
+          <div style={{ display: "flex", gap: 8 }}>{MT_URGENCY.map((u) => <button key={u} type="button" className="btn" onClick={() => setF({ ...f, urgency: u })} style={{ flex: 1, background: f.urgency === u ? MT_URGENCY_STYLE[u] : "#fff", color: f.urgency === u ? "#fff" : "#1B2430", borderColor: f.urgency === u ? MT_URGENCY_STYLE[u] : "#C9D1DB" }}>{u}</button>)}</div>
+          <div style={{ fontSize: 12, color: "#6B7684", marginTop: 4 }}>Compromiso de solución: Crítica 4 h · Alta 24 h · Media 3 días · Baja 7 días</div>
+        </Field>
+        <Field label="Ubicación exacta (opcional)"><input value={f.location} onChange={set("location")} placeholder="Ej. Línea 2, prensa 3 · Baño de oficinas" /></Field>
+        <Field label="Asunto"><input value={f.subject} onChange={set("subject")} placeholder="Ej. Fuga de agua en lavabo" /></Field>
+        <Field label="Descripción del problema"><textarea rows={4} value={f.description} onChange={set("description")} placeholder="¿Qué pasa, desde cuándo, afecta la operación?" /></Field>
+        <Field label="Foto (opcional)">
+          <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+            {f.photo && <img src={f.photo} alt="" style={{ width: 90, height: 90, objectFit: "cover", borderRadius: 6, border: "1px solid #DDE3EA" }} />}
+            <input type="file" accept="image/*" capture="environment" onChange={onPhoto} />
+            {f.photo && <button className="btn btn-ghost btn-sm" onClick={() => setF({ ...f, photo: "" })}>Quitar</button>}
+          </div>
+        </Field>
+        {err && <div style={{ fontSize: 13, color: "#B3261E" }}>{err}</div>}
+        <button className="btn btn-primary" disabled={!valid} onClick={() => setDone(onSubmit(f))} style={{ padding: 12, fontSize: 15 }}>Enviar ticket</button>
+      </div>
+    </div>
+  );
+}
+
+function MtDetail({ t, data, me, onUpdate, onClose }) {
+  const [note, setNote] = useState(""); const [type, setType] = useState(isMtto(me) ? "Avance" : "Comentario"); const [photo, setPhoto] = useState("");
+  const techs = data.users.filter((u) => u.role === "mtto" || u.role === "mtto_jefe");
+  const nameOf = (id) => data.users.find((u) => u.id === id)?.name || "Sin asignar";
+  const staff = isMtto(me); const mine = t.requesterId === me.id;
+  const addLog = () => {
+    if (!note.trim()) return;
+    let next = { ...t, log: [...t.log, { id: uid(), by: me.name, type, text: note.trim(), photo, at: new Date().toISOString() }] };
+    if (type === "Resuelto" && staff) next = { ...next, status: "Resuelto", resolvedAt: new Date().toISOString() };
+    else if (type.startsWith("En espera") && staff && next.status !== "Resuelto") next.status = "En espera";
+    else if ((type === "Diagnóstico" || type === "Avance") && staff && ["Nuevo", "Asignado", "En espera"].includes(next.status)) next.status = "En proceso";
+    onUpdate(next); setNote(""); setPhoto("");
+  };
+  const onPhoto = async (e) => { const f = e.target.files?.[0]; if (!f) return; try { setPhoto(await readPhoto(f, 900)); } catch { /* ignorar */ } };
+  const setStatus = (st) => onUpdate({ ...t, status: st, resolvedAt: st === "Resuelto" ? new Date().toISOString() : t.resolvedAt, closedAt: st === "Cerrado" ? new Date().toISOString() : null });
+  const due = mtDue(t); const over = mtOverdue(t);
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(20,30,45,.45)", display: "flex", justifyContent: "flex-end", zIndex: 50 }} onClick={onClose}>
+      <div className="hd" style={{ width: "min(600px, 100%)", height: "100%", overflowY: "auto", background: "#fff", padding: 28 }} onClick={(e) => e.stopPropagation()}>
+        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}><div style={{ fontSize: 13, color: "#6B7684" }}>{mtFolio(t.folio)} · {fmtDate(t.createdAt)}</div><button className="btn btn-ghost btn-sm" onClick={onClose}>Cerrar</button></div>
+        <h2 style={{ fontSize: 22, fontWeight: 600, margin: "0 0 12px" }}>{t.subject}</h2>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+          <MtPill status={t.status} /><span className="pill" style={{ background: "#F1F3F6" }}>{t.classification}</span><span className="pill" style={{ background: "#F1F3F6" }}>{t.bodega}</span>
+          <span className="pill" style={{ background: MT_URGENCY_STYLE[t.urgency], color: "#fff" }}>{t.urgency}</span>
+          {!["Resuelto", "Cerrado"].includes(t.status) && <span className="pill" style={{ background: over ? "#FDECEA" : "#F1F3F6", color: over ? "#B3261E" : "#1B2430" }}>{over ? "Vencido · " : "Vence "}{fmtDT(due.toISOString())}</span>}
+        </div>
+        <div className="card" style={{ padding: 16, marginBottom: 16, background: "#F7F9FC" }}>
+          <div style={{ fontSize: 13, color: "#6B7684", marginBottom: 4 }}>{t.requester} · {t.department}{t.location ? ` · ${t.location}` : ""}</div>
+          <div style={{ fontSize: 14, whiteSpace: "pre-wrap" }}>{t.description}</div>
+          {t.photo && <img src={t.photo} alt="Foto del reporte" style={{ marginTop: 10, maxWidth: "100%", maxHeight: 260, borderRadius: 6, border: "1px solid #DDE3EA" }} />}
+        </div>
+        {staff && (
+          <div className="grid2" style={{ marginBottom: 18 }}>
+            <Field label="Técnico asignado">
+              {canAssignMt(me) ? <select value={t.assignedTo || ""} onChange={(e) => onUpdate({ ...t, assignedTo: e.target.value || null, status: e.target.value && t.status === "Nuevo" ? "Asignado" : t.status })}><option value="">Sin asignar</option>{techs.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}</select>
+                : <div style={{ padding: "9px 0", fontSize: 14 }}>{nameOf(t.assignedTo)}</div>}
+            </Field>
+            <Field label="Estado"><select value={t.status} onChange={(e) => setStatus(e.target.value)}>{MT_STATUSES.filter((st) => st !== "Cerrado" || canAssignMt(me)).map((st) => <option key={st}>{st}</option>)}</select></Field>
+          </div>
+        )}
+        {!staff && <div style={{ fontSize: 13, color: "#6B7684", marginBottom: 14 }}>Atiende: <b>{nameOf(t.assignedTo)}</b></div>}
+        {mine && t.status === "Resuelto" && <div className="card" style={{ padding: 14, marginBottom: 14, borderColor: "#1F6B3E", background: "#E4F3EA" }}><div style={{ fontSize: 14, marginBottom: 8 }}>Mantenimiento marcó este ticket como resuelto. ¿Quedó bien?</div><div style={{ display: "flex", gap: 8 }}><button className="btn btn-primary btn-sm" onClick={() => setStatus("Cerrado")}>Sí, cerrar ticket</button><button className="btn btn-ghost btn-sm" onClick={() => { onUpdate({ ...t, status: "En proceso", log: [...t.log, { id: uid(), by: me.name, type: "Comentario", text: "El solicitante indica que el problema persiste.", at: new Date().toISOString() }] }); }}>No, sigue el problema</button></div></div>}
+
+        <h3 style={{ fontSize: 15, fontWeight: 600, margin: "0 0 10px" }}>Bitácora</h3>
+        {t.log.length === 0 && <div style={{ fontSize: 13, color: "#6B7684", marginBottom: 12 }}>Aún no hay registros. Mantenimiento documenta aquí diagnóstico, avances y cierre.</div>}
+        <div style={{ display: "grid", gap: 10, marginBottom: 14 }}>
+          {t.log.map((n) => (
+            <div key={n.id} style={{ borderLeft: `3px solid ${n.type === "Resuelto" ? "#1F6B3E" : n.type.startsWith("En espera") ? "#C77B12" : n.type === "Comentario" ? "#9AA5B4" : "#1F3F73"}`, padding: "6px 12px" }}>
+              <div style={{ fontSize: 12, color: "#6B7684" }}><b style={{ color: "#1B2430" }}>{n.type}</b> · {n.by} · {fmtDT(n.at)}</div>
+              <div style={{ fontSize: 14, whiteSpace: "pre-wrap" }}>{n.text}</div>
+              {n.photo && <img src={n.photo} alt="" style={{ marginTop: 6, maxWidth: "100%", maxHeight: 220, borderRadius: 6, border: "1px solid #DDE3EA" }} />}
+            </div>
+          ))}
+        </div>
+        {t.status !== "Cerrado" && (staff || mine) && (
+          <div style={{ display: "grid", gap: 8 }}>
+            {staff && <select value={type} onChange={(e) => setType(e.target.value)} style={{ width: "auto" }}>{MT_LOG_TYPES.map((x) => <option key={x}>{x}</option>)}</select>}
+            <textarea rows={3} value={note} onChange={(e) => setNote(e.target.value)} placeholder={staff ? "Qué se revisó, qué se hizo, qué falta" : "Agrega un comentario para mantenimiento"} />
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <button className="btn btn-primary" onClick={addLog} disabled={!note.trim()}>Agregar a la bitácora</button>
+              <input type="file" accept="image/*" capture="environment" onChange={onPhoto} style={{ width: "auto", fontSize: 12 }} />
+              {photo && <img src={photo} alt="" style={{ width: 40, height: 40, objectFit: "cover", borderRadius: 4 }} />}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function MtTickets({ data, me, onUpdate }) {
+  const all = data.mtto.tickets;
+  const [status, setStatus] = useState("Abiertos"); const [agent, setAgent] = useState(me.role === "mtto" ? me.id : "Todos"); const [bod, setBod] = useState("Todas"); const [open, setOpen] = useState(null);
+  const techs = data.users.filter((u) => u.role === "mtto" || u.role === "mtto_jefe");
+  const nameOf = (id) => data.users.find((u) => u.id === id)?.name || "—";
+  const list = all.filter((t) => (status === "Todos" || (status === "Abiertos" ? mtActive(t) : t.status === status)) && (agent === "Todos" || (agent === "none" ? !t.assignedTo : t.assignedTo === agent)) && (bod === "Todas" || t.bodega === bod)).sort((a, b) => (mtOverdue(b) - mtOverdue(a)) || b.folio - a.folio);
+  const counts = MT_STATUSES.map((s) => ({ s, n: all.filter((t) => t.status === s && (me.role !== "mtto" || t.assignedTo === me.id)).length }));
+  const current = open ? all.find((t) => t.folio === open) : null;
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 10, marginBottom: 20, flexWrap: "wrap" }}>{counts.map(({ s, n }) => <button key={s} className="card" onClick={() => setStatus(status === s ? "Abiertos" : s)} style={{ padding: "12px 16px", minWidth: 120, cursor: "pointer", textAlign: "left", border: status === s ? "2px solid #1F3F73" : undefined }}><div style={{ fontSize: 26, fontWeight: 600, lineHeight: 1 }}>{n}</div><div style={{ fontSize: 13, color: "#6B7684", marginTop: 4 }}>{s}</div></button>)}</div>
+      <div className="card">
+        <div style={{ display: "flex", gap: 10, padding: 14, borderBottom: "1px solid #DDE3EA", flexWrap: "wrap" }}>
+          <select value={status} onChange={(e) => setStatus(e.target.value)} style={{ width: "auto" }}><option>Abiertos</option><option>Todos</option>{MT_STATUSES.map((s) => <option key={s}>{s}</option>)}</select>
+          {me.role !== "mtto" && <select value={agent} onChange={(e) => setAgent(e.target.value)} style={{ width: "auto" }}><option value="Todos">Todos los técnicos</option><option value="none">Sin asignar</option>{techs.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}</select>}
+          <select value={bod} onChange={(e) => setBod(e.target.value)} style={{ width: "auto" }}><option>Todas</option>{MT_BODEGAS.map((b) => <option key={b}>{b}</option>)}</select>
+        </div>
+        {list.length === 0 ? <div style={{ padding: 40, textAlign: "center", color: "#6B7684", fontSize: 14 }}>No hay tickets con estos filtros.</div> : (
+          <table><thead><tr><th>Folio</th><th>Asunto</th><th>Solicitante</th><th>Bodega</th><th>Clasificación</th><th>Urgencia</th><th>Técnico</th><th>Estado</th></tr></thead>
+            <tbody>{list.map((t) => (
+              <tr key={t.folio} className="row" onClick={() => setOpen(t.folio)} style={{ background: mtOverdue(t) ? "#FFF5F5" : undefined }}>
+                <td style={{ fontWeight: 600, color: "#1F3F73" }}>{mtFolio(t.folio)}</td>
+                <td>{t.subject}<div style={{ fontSize: 12, color: mtOverdue(t) ? "#B3261E" : "#6B7684" }}>{fmtDate(t.createdAt)}{mtOverdue(t) ? " · vencido" : ""}</div></td>
+                <td>{t.requester}<div style={{ fontSize: 12, color: "#6B7684" }}>{t.department}</div></td>
+                <td>{t.bodega}</td><td>{t.classification}</td>
+                <td style={{ color: MT_URGENCY_STYLE[t.urgency], fontWeight: 600 }}>{t.urgency}</td>
+                <td>{t.assignedTo ? nameOf(t.assignedTo) : <span style={{ color: "#9A4B00" }}>Sin asignar</span>}</td><td><MtPill status={t.status} /></td>
+              </tr>
+            ))}</tbody></table>
+        )}
+      </div>
+      {current && <MtDetail t={current} data={data} me={me} onUpdate={onUpdate} onClose={() => setOpen(null)} />}
+    </div>
+  );
+}
+
+function MtDashboard({ data, me, onUpdate }) {
+  const all = data.mtto.tickets; const [period, setPeriod] = useState("month"); const [open, setOpen] = useState(null);
+  const mk = monthKeyOf(); const tickets = period === "month" ? all.filter((t) => t.createdAt.slice(0, 7) === mk) : all;
+  const techs = data.users.filter((u) => u.role === "mtto" || u.role === "mtto_jefe");
+  const openT = all.filter(mtActive); const over = openT.filter(mtOverdue);
+  const solved = tickets.filter((t) => t.resolvedAt);
+  const avgH = solved.length ? solved.reduce((s, t) => s + hoursBetween(t.createdAt, t.resolvedAt), 0) / solved.length : null;
+  const onTime = solved.length ? Math.round(100 * solved.filter((t) => new Date(t.resolvedAt) <= mtDue(t)).length / solved.length) : null;
+  const per = techs.map((a) => { const mine = tickets.filter((t) => t.assignedTo === a.id); return { ...a, total: mine.length, activos: all.filter((t) => t.assignedTo === a.id && mtActive(t)), resueltos: mine.filter((t) => t.resolvedAt).length, vencidos: all.filter((t) => t.assignedTo === a.id && mtOverdue(t)).length }; });
+  const unassigned = openT.filter((t) => !t.assignedTo);
+  const countBy = (f, keys) => keys.map((k) => ({ k, n: tickets.filter((t) => t[f] === k).length })).filter((x) => x.n > 0).sort((a, b) => b.n - a.n);
+  const byCls = countBy("classification", data.mtto.classifications), byBod = countBy("bodega", MT_BODEGAS), byUrg = countBy("urgency", MT_URGENCY);
+  const Kpi = ({ label, value, sub, color }) => <div className="card" style={{ padding: "14px 18px", flex: 1, minWidth: 140 }}><div style={{ fontSize: 30, fontWeight: 700, lineHeight: 1, color: color || "#1B2430" }}>{value}</div><div style={{ fontSize: 13, color: "#6B7684", marginTop: 4 }}>{label}</div>{sub && <div style={{ fontSize: 12, color: "#9AA5B4" }}>{sub}</div>}</div>;
+  const Row = ({ t }) => <div className="row" onClick={() => setOpen(t.folio)} style={{ display: "flex", gap: 10, alignItems: "center", padding: "7px 8px", margin: "0 -8px", borderRadius: 6, fontSize: 13 }}><span style={{ fontWeight: 600, color: "#1F3F73", width: 62 }}>{mtFolio(t.folio)}</span><span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.subject} <span style={{ color: "#6B7684" }}>· {t.bodega}</span></span><span style={{ color: MT_URGENCY_STYLE[t.urgency], fontWeight: 600, width: 54 }}>{t.urgency}</span><MtPill status={t.status} /></div>;
+  const current = open ? all.find((t) => t.folio === open) : null;
+  return (
+    <div style={{ display: "grid", gap: 20 }}>
+      <div style={{ display: "flex", gap: 6 }}>{[["month", `Este mes`], ["all", "Histórico"]].map(([k, l]) => <button key={k} className={`btn btn-sm ${period === k ? "btn-primary" : "btn-ghost"}`} onClick={() => setPeriod(k)}>{l}</button>)}</div>
+      <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+        <Kpi label="Tickets recibidos" value={tickets.length} /><Kpi label="Abiertos ahora" value={openT.length} color="#9A4B00" /><Kpi label="Vencidos" value={over.length} color={over.length ? "#B3261E" : "#1F6B3E"} />
+        <Kpi label="Sin asignar" value={unassigned.length} color={unassigned.length ? "#B3261E" : "#1F6B3E"} /><Kpi label="Tiempo promedio de solución" value={fmtHours(avgH)} /><Kpi label="Cumplimiento de urgencia" value={onTime == null ? "—" : `${onTime}%`} sub="resueltos dentro del compromiso" color={onTime != null && onTime < 80 ? "#B3261E" : "#1F6B3E"} />
+      </div>
+      <div className="card" style={{ padding: 20 }}>
+        <h2 className="section-title" style={{ fontSize: 17 }}>Carga por técnico</h2>
+        {techs.length === 0 ? <div style={{ fontSize: 13, color: "#6B7684" }}>Aún no hay usuarios con perfil de mantenimiento. Créalos en Usuarios.</div> : (
+          <table><thead><tr><th>Técnico</th><th style={{ width: "30%" }}>Tickets {period === "month" ? "del mes" : "totales"}</th><th>Activos</th><th>Resueltos</th><th>Vencidos</th></tr></thead>
+            <tbody>{per.map((a) => <tr key={a.id}><td style={{ fontWeight: 600 }}>{a.name}</td><td><Bar value={a.total} max={Math.max(1, ...per.map((x) => x.total))} label="" /></td><td>{a.activos.length}</td><td style={{ color: "#1F6B3E", fontWeight: 600 }}>{a.resueltos}</td><td style={{ color: a.vencidos ? "#B3261E" : "inherit", fontWeight: a.vencidos ? 600 : 400 }}>{a.vencidos}</td></tr>)}</tbody></table>
+        )}
+      </div>
+      <div className="grid2" style={{ alignItems: "start" }}>
+        {per.map((a) => <div key={a.id} className="card" style={{ padding: 18 }}><div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}><h3 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>{a.name}</h3><span style={{ fontSize: 13, color: "#6B7684" }}>{a.activos.length} activos</span></div>{a.activos.length === 0 ? <div style={{ fontSize: 13, color: "#6B7684" }}>Sin pendientes.</div> : a.activos.sort((x, y) => MT_URGENCY.indexOf(y.urgency) - MT_URGENCY.indexOf(x.urgency)).map((t) => <Row key={t.folio} t={t} />)}</div>)}
+        <div className="card" style={{ padding: 18, borderColor: unassigned.length ? "#E5B4B0" : undefined }}><div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}><h3 style={{ margin: 0, fontSize: 16, fontWeight: 600, color: unassigned.length ? "#B3261E" : "inherit" }}>Sin asignar</h3><span style={{ fontSize: 13, color: "#6B7684" }}>{unassigned.length}</span></div>{unassigned.length === 0 ? <div style={{ fontSize: 13, color: "#6B7684" }}>Todo repartido.</div> : unassigned.map((t) => <Row key={t.folio} t={t} />)}</div>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 16 }}>
+        {[["Por clasificación", byCls, "#1F3F73"], ["Por bodega", byBod, "#2E8B8B"], ["Por urgencia", byUrg, "#7B1FA2"]].map(([tt, arr, col]) => <div key={tt} className="card" style={{ padding: 18 }}><h3 style={{ margin: "0 0 12px", fontSize: 16, fontWeight: 600 }}>{tt}</h3>{arr.length === 0 ? <div style={{ fontSize: 13, color: "#6B7684" }}>Sin datos.</div> : <div style={{ display: "grid", gap: 8 }}>{arr.map((x) => <Bar key={x.k} label={x.k} value={x.n} max={arr[0].n} color={col} />)}</div>}</div>)}
+      </div>
+      {current && <MtDetail t={current} data={data} me={me} onUpdate={onUpdate} onClose={() => setOpen(null)} />}
+    </div>
+  );
+}
+
+// Lo que ve el solicitante en la portada
+function MyMtTickets({ data, me, onUpdate }) {
+  const [open, setOpen] = useState(null);
+  const mine = data.mtto.tickets.filter((t) => t.requesterId === me.id).sort((a, b) => b.folio - a.folio);
+  if (!mine.length) return null;
+  const current = open ? mine.find((t) => t.folio === open) : null;
+  return (
+    <section className="card" style={{ padding: 22, marginBottom: 20 }}>
+      <h2 className="section-title">Mis tickets de mantenimiento</h2>
+      {mine.slice(0, 8).map((t) => (
+        <div key={t.folio} className="row" onClick={() => setOpen(t.folio)} style={{ display: "flex", gap: 10, alignItems: "center", padding: "9px 8px", margin: "0 -8px", borderRadius: 6, fontSize: 14, borderTop: "1px solid #EEF1F5" }}>
+          <span style={{ fontWeight: 600, color: "#1F3F73", width: 70 }}>{mtFolio(t.folio)}</span>
+          <span style={{ flex: 1 }}>{t.subject}<div style={{ fontSize: 12, color: "#6B7684" }}>{t.bodega} · {fmtDate(t.createdAt)}{t.log.length ? ` · último avance ${fmtDate(t.log[t.log.length - 1].at)}` : ""}</div></span>
+          <MtPill status={t.status} />
+        </div>
+      ))}
+      {current && <MtDetail t={current} data={data} me={me} onUpdate={onUpdate} onClose={() => setOpen(null)} />}
+    </section>
+  );
+}
+
 // ============ Portada pública ============
-function Home({ data, pages, month, setMonth, onTicket, me, onPanel, onLogout, onPolicies, onVehicles }) {
+function Home({ data, pages, month, setMonth, onTicket, onMtto, onUpdateMt, me, onPanel, onLogout, onPolicies, onVehicles }) {
   const [openPost, setOpenPost] = useState(null);
   const [present, setPresent] = useState(false);
   const [y, m] = month.split("-").map(Number);
@@ -937,7 +1176,8 @@ function Home({ data, pages, month, setMonth, onTicket, me, onPanel, onLogout, o
             <span style={{ alignSelf: "center", fontSize: 13, opacity: .85, marginRight: 4 }}>{me.name}</span>
             {me.role === "admin" && <button className="btn" onClick={onPolicies} style={{ background: "transparent", color: "#fff", borderColor: "rgba(255,255,255,.4)" }}>Políticas</button>}
             <button className="btn" onClick={onVehicles} style={{ background: "transparent", color: "#fff", borderColor: "rgba(255,255,255,.4)" }}>Vehículos{canApprove(me) && (data.loans || []).some((l) => l.status === "solicitado") ? ` · ${(data.loans || []).filter((l) => l.status === "solicitado").length} por aprobar` : ""}</button>
-            <button className="btn" onClick={onTicket} style={{ background: "#fff", color: "#1F3F73" }}>Levantar ticket a IT</button>
+            <button className="btn" onClick={onTicket} style={{ background: "#fff", color: "#1F3F73" }}>Ticket a IT</button>
+            <button className="btn" onClick={onMtto} style={{ background: "#fff", color: "#1F3F73" }}>Ticket a Mantenimiento</button>
             {modulesOf(me).length > 0 && <button className="btn" onClick={onPanel} style={{ background: "transparent", color: "#fff", borderColor: "rgba(255,255,255,.4)" }}>Panel</button>}
             <button className="btn" onClick={onLogout} style={{ background: "transparent", color: "#fff", borderColor: "rgba(255,255,255,.4)" }}>Cerrar sesión</button>
           </div>
@@ -966,6 +1206,7 @@ function Home({ data, pages, month, setMonth, onTicket, me, onPanel, onLogout, o
         )}
 
         <PoliciesSection data={data} me={me} />
+        <MyMtTickets data={data} me={me} onUpdate={onUpdateMt} />
 
         <div className="home-grid" style={{ display: "grid", gridTemplateColumns: "1.1fr .9fr", gap: 20 }}>
           <div style={{ display: "grid", gap: 20, alignContent: "start" }}>
@@ -1399,7 +1640,7 @@ function Users({ data, me, onChange }) {
                 <Field label="Perfil"><select value={nu.role} onChange={(e) => setNu({ ...nu, role: e.target.value })}>{Object.entries(ROLE_LABEL).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select></Field>
                 <Field label="Contraseña (mínimo 4 caracteres)"><input type="text" value={nu.pass} spellCheck={false} onChange={(e) => setNu({ ...nu, pass: e.target.value })} /></Field>
               </div>
-              <div style={{ fontSize: 12, color: "#6B7684" }}>Colaborador: ve la portada y levanta tickets. Inventarios: solo el inventario, con permiso para dar de alta y editar. Soporte IT: tickets, proyectos e inventario. RH: publica el boletín. Administrador: todo.</div>
+              <div style={{ fontSize: 12, color: "#6B7684" }}>Colaborador: ve la portada y levanta tickets. Jefe de mantenimiento: asigna y supervisa tickets de mantenimiento. Técnico de mantenimiento: atiende los que se le asignan. Inventarios: solo el inventario, con permiso para dar de alta y editar. Soporte IT: tickets, proyectos e inventario. RH: publica el boletín. Administrador: todo.</div>
               {nu.id && !idOk && <div style={{ fontSize: 13, color: "#B3261E" }}>El usuario debe tener al menos 3 caracteres (letras, números, punto o guion) y no estar en uso.</div>}
               <div style={{ display: "flex", gap: 8 }}><button className="btn btn-primary" onClick={create} disabled={!idOk || !nu.name.trim() || nu.pass.length < 4}>Crear usuario</button><button className="btn btn-ghost" onClick={() => setNu(null)}>Cancelar</button></div>
             </div>
@@ -1679,6 +1920,7 @@ function App() {
         if (!d.users.some((u) => u.role === "colaborador")) d.users = [...d.users, DEFAULT_DATA.users.find((u) => u.id === "colaborador")];
         if (!Array.isArray(d.policies)) d.policies = [];
         if (!Array.isArray(d.loans)) d.loans = [];
+        if (!d.mtto || !Array.isArray(d.mtto.tickets)) d.mtto = { ...DEFAULT_DATA.mtto, ...(d.mtto || {}) };
         const faltan = DEFAULT_DATA.departments.filter((x) => !d.departments.some((y) => y.toLowerCase() === x.toLowerCase()));
         if (faltan.length) d.departments = [...d.departments, ...faltan].sort((a, b) => a.localeCompare(b));
         setData(d);
@@ -1733,6 +1975,8 @@ function App() {
   const me = data.users.find((u) => u.id === meId);
   const createTicket = (f) => { const folio = data.nextFolio; persist({ ...data, tickets: [...data.tickets, { ...f, folio, status: "Nuevo", assignedTo: null, createdAt: new Date().toISOString(), closedAt: null, notes: [] }], nextFolio: folio + 1 }); return folioStr(folio); };
   const updateTicket = (t) => persist({ ...data, tickets: data.tickets.map((x) => (x.folio === t.folio ? t : x)) });
+  const createMt = (f) => { const folio = data.mtto.nextFolio; persist({ ...data, mtto: { ...data.mtto, nextFolio: folio + 1, tickets: [...data.mtto.tickets, { ...f, folio, requesterId: me ? me.id : null, status: "Nuevo", assignedTo: null, createdAt: new Date().toISOString(), resolvedAt: null, closedAt: null, log: [] }] } }); return mtFolio(folio); };
+  const updateMt = (t) => persist({ ...data, mtto: { ...data.mtto, tickets: data.mtto.tickets.map((x) => (x.folio === t.folio ? t : x)) } });
   const setEmployees = (employees) => persist({ ...data, employees, awards: data.awards.filter((a) => employees.some((e) => e.id === a.employeeId)) });
   const renameIn = (key, fields) => (items, oldV, newV) => {
     let next = { ...data, [key]: items };
@@ -1777,7 +2021,8 @@ function App() {
         <style>{css}</style>
         {screen === "politicas" && <PoliciesAll data={data} me={me} onBack={() => setScreen("home")} />}
         {screen === "vehiculos" && <VehiclesScreen data={data} me={me} onChange={(loans) => persist({ ...data, loans })} onBack={() => setScreen("home")} />}
-        {screen !== "form" && screen !== "politicas" && screen !== "vehiculos" && <Home data={data} pages={pdfs[month]} month={month} setMonth={setMonth} onTicket={() => setScreen("form")} me={me} onPanel={openPanel} onLogout={logout} onPolicies={() => setScreen("politicas")} onVehicles={() => setScreen("vehiculos")} />}
+        {screen === "mtto" && <div style={{ padding: 20 }}><MtForm data={data} me={me} onSubmit={createMt} onBack={() => setScreen("home")} /></div>}
+        {screen !== "form" && screen !== "mtto" && screen !== "politicas" && screen !== "vehiculos" && <Home data={data} pages={pdfs[month]} month={month} setMonth={setMonth} onTicket={() => setScreen("form")} onMtto={() => setScreen("mtto")} onUpdateMt={updateMt} me={me} onPanel={openPanel} onLogout={logout} onPolicies={() => setScreen("politicas")} onVehicles={() => setScreen("vehiculos")} />}
         {screen === "form" && <div style={{ padding: 20 }}><PublicForm data={data} me={me} onSubmit={createTicket} onBack={() => setScreen("home")} /></div>}
       </div>
     );
@@ -1786,12 +2031,12 @@ function App() {
   const isAdmin = me.role === "admin";
   const mine = modulesOf(me);
   const allowed = [...mine, "users"];
-  const groups = ["Mesa de ayuda", "Control interno IT", "Comunicación interna", "Configuración"].map((g) => ({
+  const groups = ["Mesa de ayuda", "Control interno IT", "Mantenimiento", "Comunicación interna", "Configuración"].map((g) => ({
     label: g,
     tabs: [...MODULES.filter((m) => m.group === g && mine.includes(m.id)).map((m) => [m.id, m.label]), ...(g === "Configuración" ? [["users", isAdmin ? "Usuarios" : "Mi cuenta"]] : [])],
   })).filter((g) => g.tabs.length);
   const tabOk = allowed.includes(tab) ? tab : firstTab(me);
-  const titles = { proyectos: "Proyectos IT", inventario: "Inventario", dashboard: "Dashboard de la mesa de ayuda", tickets: "Tickets", classifications: "Clasificaciones", employees: "Colaboradores", awards: "Empleados del mes", posts: "Avisos y frase del mes", bulletin: "Boletín en PDF", policies: "Políticas por departamento", bitacora: "Bitácora de vehículos de planta", departments: "Departamentos", users: isAdmin ? "Usuarios" : "Mi cuenta" };
+  const titles = { proyectos: "Proyectos IT", inventario: "Inventario", dashboard: "Dashboard de la mesa de ayuda", tickets: "Tickets", classifications: "Clasificaciones", employees: "Colaboradores", awards: "Empleados del mes", posts: "Avisos y frase del mes", bulletin: "Boletín en PDF", policies: "Políticas por departamento", mtto_dashboard: "Dashboard de mantenimiento", mtto_tickets: "Tickets de mantenimiento", mtto_cats: "Clasificaciones de mantenimiento", bitacora: "Bitácora de vehículos de planta", departments: "Departamentos", users: isAdmin ? "Usuarios" : "Mi cuenta" };
 
   return (
     <div className="hd" style={{ display: "flex", minHeight: "100vh" }}>
@@ -1822,6 +2067,9 @@ function App() {
         {tabOk === "awards" && <Awards data={data} onChange={(awards) => persist({ ...data, awards })} />}
         {tabOk === "posts" && <Posts data={data} me={me} onChange={(posts) => persist({ ...data, posts })} />}
         {tabOk === "bulletin" && <Bulletin month={month} setMonth={setMonth} pages={pdfs[month]} onSave={savePdf} onRemove={removePdf} onApply={(r) => persist(aplicarExtraccion(data, r, month, me.name))} />}
+        {tabOk === "mtto_dashboard" && <MtDashboard data={data} me={me} onUpdate={updateMt} />}
+        {tabOk === "mtto_tickets" && <MtTickets data={data} me={me} onUpdate={updateMt} />}
+        {tabOk === "mtto_cats" && <Catalog title="Clasificaciones de mantenimiento" hint="Tipo de trabajo. Aparecen como opción al levantar el ticket." items={data.mtto.classifications} inUse={(c) => data.mtto.tickets.filter((t) => t.classification === c).length} onChange={(items, o, n) => persist({ ...data, mtto: { ...data.mtto, classifications: items, tickets: o && n ? data.mtto.tickets.map((t) => (t.classification === o ? { ...t, classification: n } : t)) : data.mtto.tickets } })} />}
         {tabOk === "bitacora" && <Bitacora data={data} me={me} onChange={(loans) => persist({ ...data, loans })} />}
         {tabOk === "policies" && <Policies data={data} me={me} onChange={(policies) => persist({ ...data, policies })} onError={setError} />}
         {tabOk === "users" && <Users data={data} me={me} onChange={(users) => persist({ ...data, users, tickets: data.tickets.map((t) => (t.assignedTo && !users.some((u) => u.id === t.assignedTo) ? { ...t, assignedTo: null, status: t.status === "Cerrado" ? t.status : "Nuevo" } : t)) })} />}
