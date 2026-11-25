@@ -89,7 +89,7 @@ window.LOGO_SRC = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAg
 const { useState, useEffect, useMemo } = React;
 
 // ============ Configuración ============
-const APP_VERSION = "2026-11-09.1";
+const APP_VERSION = "2026-11-24.1";
 const KEY = "intranet:data";
 const OLD_KEY = "helpdesk:data";
 const SHARED = true;
@@ -909,14 +909,30 @@ function Bitacora({ data, me, onChange }) {
 
 // ============ Tickets de mantenimiento ============
 const MT_STATUSES = ["Nuevo", "Asignado", "En proceso", "En espera", "Resuelto", "Cerrado"];
-const MT_STATUS_STYLE = { ...STATUS_STYLE, "En espera": { bg: "#FFF8E1", fg: "#7A5A00" }, Resuelto: { bg: "#E0F2F1", fg: "#00695C" } };
+// Colores fuertes: amarillo recién abierto, azul pendiente de asignar / en atención, verde resuelto, rojo vencido
+const MT_STATUS_STYLE = {
+  Nuevo: { bg: "#FFC107", fg: "#2B2000" },
+  Asignado: { bg: "#1E63D6", fg: "#fff" },
+  "En proceso": { bg: "#0D47A1", fg: "#fff" },
+  "En espera": { bg: "#F57C00", fg: "#fff" },
+  Resuelto: { bg: "#2E7D32", fg: "#fff" },
+  Cerrado: { bg: "#1B5E20", fg: "#fff" },
+};
+const MT_OVERDUE_STYLE = { bg: "#D32F2F", fg: "#fff" };
+const MT_UNASSIGNED_STYLE = { bg: "#1E63D6", fg: "#fff" };
+const mtRowBg = (t) => (mtOverdue(t) ? "#FDECEA" : t.status === "Nuevo" ? "#FFF8E1" : !t.assignedTo && !["Resuelto", "Cerrado"].includes(t.status) ? "#E3F0FF" : undefined);
 const MT_URGENCY = ["Baja", "Media", "Alta", "Crítica"];
 const MT_URGENCY_STYLE = { Baja: "#7A8797", Media: "#C77B12", Alta: "#B3261E", Crítica: "#7B1FA2" };
 const MT_SLA_H = { Baja: 168, Media: 72, Alta: 24, Crítica: 4 };     // horas comprometidas de solución
 const MT_LOG_TYPES = ["Diagnóstico", "Avance", "En espera de refacción", "En espera de proveedor", "Resuelto", "Comentario"];
 const MT_BODEGAS = ["Leeder", "Superior", "Almacén", "Herrajes", "Costa Rica"];
 const mtFolio = (n) => `MT-${String(n).padStart(4, "0")}`;
-const MtPill = ({ status }) => { const s = MT_STATUS_STYLE[status] || { bg: "#EEE", fg: "#333" }; return <span className="pill" style={{ background: s.bg, color: s.fg }}>{status}</span>; };
+const MtPill = ({ status, t }) => {
+  const st = t ? t.status : status; const over = t ? mtOverdue(t) : false;
+  const s = over ? MT_OVERDUE_STYLE : MT_STATUS_STYLE[st] || { bg: "#EEE", fg: "#333" };
+  return <span className="pill" style={{ background: s.bg, color: s.fg, fontWeight: 600 }}>{over ? `${st} · vencido` : st}</span>;
+};
+const MtTech = ({ t, nameOf }) => (t.assignedTo ? <span>{nameOf(t.assignedTo)}</span> : <span className="pill" style={{ background: MT_UNASSIGNED_STYLE.bg, color: MT_UNASSIGNED_STYLE.fg, fontWeight: 600 }}>Sin asignar</span>);
 const isMtto = (me) => me.role === "admin" || me.role === "mtto_jefe" || me.role === "mtto";
 const canAssignMt = (me) => me.role === "admin" || me.role === "mtto_jefe";
 const mtDue = (t) => new Date(new Date(t.createdAt).getTime() + (MT_SLA_H[t.urgency] || 72) * 36e5);
@@ -995,7 +1011,7 @@ function MtDetail({ t, data, me, onUpdate, onClose }) {
         <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}><div style={{ fontSize: 13, color: "#6B7684" }}>{mtFolio(t.folio)} · {fmtDate(t.createdAt)}</div><button className="btn btn-ghost btn-sm" onClick={onClose}>Cerrar</button></div>
         <h2 style={{ fontSize: 22, fontWeight: 600, margin: "0 0 12px" }}>{t.subject}</h2>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
-          <MtPill status={t.status} /><span className="pill" style={{ background: "#F1F3F6" }}>{t.classification}</span><span className="pill" style={{ background: "#F1F3F6" }}>{t.bodega}</span>
+          <MtPill t={t} /><span className="pill" style={{ background: "#F1F3F6" }}>{t.classification}</span><span className="pill" style={{ background: "#F1F3F6" }}>{t.bodega}</span>
           <span className="pill" style={{ background: MT_URGENCY_STYLE[t.urgency], color: "#fff" }}>{t.urgency}</span>
           {!["Resuelto", "Cerrado"].includes(t.status) && <span className="pill" style={{ background: over ? "#FDECEA" : "#F1F3F6", color: over ? "#B3261E" : "#1B2430" }}>{over ? "Vencido · " : "Vence "}{fmtDT(due.toISOString())}</span>}
         </div>
@@ -1009,6 +1025,7 @@ function MtDetail({ t, data, me, onUpdate, onClose }) {
             <Field label="Técnico asignado">
               {canAssignMt(me) ? <select value={t.assignedTo || ""} onChange={(e) => onUpdate({ ...t, assignedTo: e.target.value || null, status: e.target.value && t.status === "Nuevo" ? "Asignado" : t.status })}><option value="">Sin asignar</option>{techs.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}</select>
                 : <div style={{ padding: "9px 0", fontSize: 14 }}>{nameOf(t.assignedTo)}</div>}
+              {canAssignMt(me) && techs.length === 0 && <div style={{ fontSize: 12, color: "#B3261E", marginTop: 4 }}>No hay técnicos registrados. Créalos en Configuración → Usuarios con el perfil “Técnico de mantenimiento” o “Jefe de mantenimiento”.</div>}
             </Field>
             <Field label="Estado"><select value={t.status} onChange={(e) => setStatus(e.target.value)}>{MT_STATUSES.filter((st) => st !== "Cerrado" || canAssignMt(me)).map((st) => <option key={st}>{st}</option>)}</select></Field>
           </div>
@@ -1053,7 +1070,9 @@ function MtTickets({ data, me, onUpdate }) {
   const current = open ? all.find((t) => t.folio === open) : null;
   return (
     <div>
-      <div style={{ display: "flex", gap: 10, marginBottom: 20, flexWrap: "wrap" }}>{counts.map(({ s, n }) => <button key={s} className="card" onClick={() => setStatus(status === s ? "Abiertos" : s)} style={{ padding: "12px 16px", minWidth: 120, cursor: "pointer", textAlign: "left", border: status === s ? "2px solid #1F3F73" : undefined }}><div style={{ fontSize: 26, fontWeight: 600, lineHeight: 1 }}>{n}</div><div style={{ fontSize: 13, color: "#6B7684", marginTop: 4 }}>{s}</div></button>)}</div>
+      {techs.length === 0 && canAssignMt(me) && <div style={{ background: "#E3F0FF", border: "1px solid #1E63D6", color: "#0D47A1", padding: "10px 14px", borderRadius: 8, marginBottom: 16, fontSize: 14 }}><b>Aún no hay técnicos de mantenimiento.</b> Para poder asignar tickets, ve a <b>Configuración → Usuarios → Nuevo usuario</b> y crea cada técnico con el perfil <b>Técnico de mantenimiento</b> (y al responsable del área como <b>Jefe de mantenimiento</b>). En cuanto existan, aparecen en la lista de asignación.</div>}
+      <div style={{ display: "flex", gap: 10, marginBottom: 20, flexWrap: "wrap" }}>{counts.map(({ s, n }) => <button key={s} className="card" onClick={() => setStatus(status === s ? "Abiertos" : s)} style={{ padding: "12px 16px", minWidth: 120, cursor: "pointer", textAlign: "left", borderLeft: `6px solid ${MT_STATUS_STYLE[s].bg}`, outline: status === s ? "2px solid #1F3F73" : "none" }}><div style={{ fontSize: 26, fontWeight: 600, lineHeight: 1 }}>{n}</div><div style={{ fontSize: 13, color: "#6B7684", marginTop: 4 }}>{s}</div></button>)}
+        <div className="card" style={{ padding: "12px 16px", minWidth: 120, borderLeft: `6px solid ${MT_OVERDUE_STYLE.bg}` }}><div style={{ fontSize: 26, fontWeight: 600, lineHeight: 1, color: "#D32F2F" }}>{all.filter(mtOverdue).length}</div><div style={{ fontSize: 13, color: "#6B7684", marginTop: 4 }}>Vencidos</div></div></div>
       <div className="card">
         <div style={{ display: "flex", gap: 10, padding: 14, borderBottom: "1px solid #DDE3EA", flexWrap: "wrap" }}>
           <select value={status} onChange={(e) => setStatus(e.target.value)} style={{ width: "auto" }}><option>Abiertos</option><option>Todos</option>{MT_STATUSES.map((s) => <option key={s}>{s}</option>)}</select>
@@ -1063,13 +1082,13 @@ function MtTickets({ data, me, onUpdate }) {
         {list.length === 0 ? <div style={{ padding: 40, textAlign: "center", color: "#6B7684", fontSize: 14 }}>No hay tickets con estos filtros.</div> : (
           <table><thead><tr><th>Folio</th><th>Asunto</th><th>Solicitante</th><th>Bodega</th><th>Clasificación</th><th>Urgencia</th><th>Técnico</th><th>Estado</th></tr></thead>
             <tbody>{list.map((t) => (
-              <tr key={t.folio} className="row" onClick={() => setOpen(t.folio)} style={{ background: mtOverdue(t) ? "#FFF5F5" : undefined }}>
+              <tr key={t.folio} className="row" onClick={() => setOpen(t.folio)} style={{ background: mtRowBg(t) }}>
                 <td style={{ fontWeight: 600, color: "#1F3F73" }}>{mtFolio(t.folio)}</td>
                 <td>{t.subject}<div style={{ fontSize: 12, color: mtOverdue(t) ? "#B3261E" : "#6B7684" }}>{fmtDate(t.createdAt)}{mtOverdue(t) ? " · vencido" : ""}</div></td>
                 <td>{t.requester}<div style={{ fontSize: 12, color: "#6B7684" }}>{t.department}</div></td>
                 <td>{t.bodega}</td><td>{t.classification}</td>
                 <td style={{ color: MT_URGENCY_STYLE[t.urgency], fontWeight: 600 }}>{t.urgency}</td>
-                <td>{t.assignedTo ? nameOf(t.assignedTo) : <span style={{ color: "#9A4B00" }}>Sin asignar</span>}</td><td><MtPill status={t.status} /></td>
+                <td><MtTech t={t} nameOf={nameOf} /></td><td><MtPill t={t} /></td>
               </tr>
             ))}</tbody></table>
         )}
@@ -1092,7 +1111,7 @@ function MtDashboard({ data, me, onUpdate }) {
   const countBy = (f, keys) => keys.map((k) => ({ k, n: tickets.filter((t) => t[f] === k).length })).filter((x) => x.n > 0).sort((a, b) => b.n - a.n);
   const byCls = countBy("classification", data.mtto.classifications), byBod = countBy("bodega", MT_BODEGAS), byUrg = countBy("urgency", MT_URGENCY);
   const Kpi = ({ label, value, sub, color }) => <div className="card" style={{ padding: "14px 18px", flex: 1, minWidth: 140 }}><div style={{ fontSize: 30, fontWeight: 700, lineHeight: 1, color: color || "#1B2430" }}>{value}</div><div style={{ fontSize: 13, color: "#6B7684", marginTop: 4 }}>{label}</div>{sub && <div style={{ fontSize: 12, color: "#9AA5B4" }}>{sub}</div>}</div>;
-  const Row = ({ t }) => <div className="row" onClick={() => setOpen(t.folio)} style={{ display: "flex", gap: 10, alignItems: "center", padding: "7px 8px", margin: "0 -8px", borderRadius: 6, fontSize: 13 }}><span style={{ fontWeight: 600, color: "#1F3F73", width: 62 }}>{mtFolio(t.folio)}</span><span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.subject} <span style={{ color: "#6B7684" }}>· {t.bodega}</span></span><span style={{ color: MT_URGENCY_STYLE[t.urgency], fontWeight: 600, width: 54 }}>{t.urgency}</span><MtPill status={t.status} /></div>;
+  const Row = ({ t }) => <div className="row" onClick={() => setOpen(t.folio)} style={{ display: "flex", gap: 10, alignItems: "center", padding: "7px 8px", margin: "0 -8px", borderRadius: 6, fontSize: 13 }}><span style={{ fontWeight: 600, color: "#1F3F73", width: 62 }}>{mtFolio(t.folio)}</span><span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.subject} <span style={{ color: "#6B7684" }}>· {t.bodega}</span></span><span style={{ color: MT_URGENCY_STYLE[t.urgency], fontWeight: 600, width: 54 }}>{t.urgency}</span><MtPill t={t} /></div>;
   const current = open ? all.find((t) => t.folio === open) : null;
   return (
     <div style={{ display: "grid", gap: 20 }}>
@@ -1133,7 +1152,7 @@ function MyMtTickets({ data, me, onUpdate }) {
         <div key={t.folio} className="row" onClick={() => setOpen(t.folio)} style={{ display: "flex", gap: 10, alignItems: "center", padding: "9px 8px", margin: "0 -8px", borderRadius: 6, fontSize: 14, borderTop: "1px solid #EEF1F5" }}>
           <span style={{ fontWeight: 600, color: "#1F3F73", width: 70 }}>{mtFolio(t.folio)}</span>
           <span style={{ flex: 1 }}>{t.subject}<div style={{ fontSize: 12, color: "#6B7684" }}>{t.bodega} · {fmtDate(t.createdAt)}{t.log.length ? ` · último avance ${fmtDate(t.log[t.log.length - 1].at)}` : ""}</div></span>
-          <MtPill status={t.status} />
+          <MtPill t={t} />
         </div>
       ))}
       {current && <MtDetail t={current} data={data} me={me} onUpdate={onUpdate} onClose={() => setOpen(null)} />}
